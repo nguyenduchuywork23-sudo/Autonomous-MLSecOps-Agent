@@ -1,4 +1,4 @@
-"""Unified MCP Server v4.1 — All Docker Arsenal tools in a single process.
+"""Unified MCP Server — All Docker Arsenal tools in a single process.
 
 This server provides access to the complete Docker Arsenal security toolkit
 inside Docker containers for full OPSEC isolation, alongside companion native servers.
@@ -58,7 +58,7 @@ def docker_arsenal_status() -> str:
     """Return status and inventory of all registered security tools."""
     return json.dumps({
         "status": "online",
-        "version": "v4.1",
+        "version": "1.0",
         "server": "Unified Docker Arsenal",
         "total_tools": 31,
         "recon_tools_count": 23,

@@ -473,7 +473,7 @@ def validate_config(cfg: dict | None = None) -> tuple[bool, list[str]]:
         if not isinstance(hitl.get("destructive_tools"), list):
             errors.append("hitl.destructive_tools must be a list.")
 
-    # 5. Reporter section (v4.1 upgrade)
+    # 5. Reporter section
     reporter = cfg.get("reporter")
     if reporter is not None:
         if not isinstance(reporter, dict):
@@ -490,7 +490,7 @@ def validate_config(cfg: dict | None = None) -> tuple[bool, list[str]]:
             if "skip_tools" in reporter and not isinstance(reporter["skip_tools"], list):
                 errors.append("reporter.skip_tools must be a list.")
 
-    # 6. Reports section (v4.1 upgrade)
+    # 6. Reports section
     reports = cfg.get("reports")
     if reports is not None:
         if not isinstance(reports, dict):
@@ -505,7 +505,7 @@ def validate_config(cfg: dict | None = None) -> tuple[bool, list[str]]:
             if "generate_json" in reports and not isinstance(reports["generate_json"], bool):
                 errors.append("reports.generate_json must be a boolean.")
 
-    # 7. Wordlists section (v4.1 upgrade)
+    # 7. Wordlists section
     wordlists = cfg.get("wordlists")
     if wordlists is not None:
         if not isinstance(wordlists, dict):
@@ -514,7 +514,7 @@ def validate_config(cfg: dict | None = None) -> tuple[bool, list[str]]:
             if "directory" in wordlists and (not isinstance(wordlists["directory"], str) or not wordlists["directory"].strip()):
                 errors.append("wordlists.directory must be a non-empty string.")
 
-    # 8. MCP section (v4.1 upgrade)
+    # 8. MCP section
     mcp_cfg = cfg.get("mcp")
     if mcp_cfg is not None:
         if not isinstance(mcp_cfg, dict):

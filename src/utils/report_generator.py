@@ -1,4 +1,4 @@
-"""Enterprise DOCX Report Generator for MLSecOps Agent v4.0.
+"""Professional DOCX Report Generator for Autonomous MLSecOps Agent.
 
 Generates professional penetration test reports from a ReportState object.
 Features:
@@ -9,7 +9,7 @@ Features:
 - Methodology table (kill chain timeline)
 - Risk matrix and severity statistics
 - Recommendations prioritized by severity
-- Consistent enterprise styling (Calibri, professional colors)
+- Consistent professional styling (Calibri, professional colors)
 - Header/Footer with page numbers and confidential marking
 """
 
@@ -136,7 +136,7 @@ def _add_header_row(table, headers: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def generate_docx_report(report_data: dict, audit_path: str = "") -> str:
-    """Generate an enterprise-grade DOCX pentest report.
+    """Generate a comprehensive DOCX pentest report.
 
     Args:
         report_data: Dictionary from ReportState.to_dict().
@@ -182,7 +182,7 @@ def generate_docx_report(report_data: dict, audit_path: str = "") -> str:
     else:
         doc.add_paragraph(
             "Cuộc đánh giá an toàn thông tin được thực hiện tự động bởi hệ thống "
-            f"MLSecOps Agent v4.1 nhắm vào mục tiêu: {target}."
+            f"Autonomous MLSecOps Agent nhắm vào mục tiêu: {target}."
         )
 
     # Risk Score Box
@@ -223,6 +223,13 @@ def generate_docx_report(report_data: dict, audit_path: str = "") -> str:
         doc.add_heading(f"{sec_idx}. Phân tích Bề mặt Tấn công (Attack Surface Analysis)", level=1)
         _build_attack_surface_section(doc, attack_surface, report_data=report_data)
         sec_idx += 1
+
+    # ===================================================================
+    # THREAT MODELING & BAYESIAN ATTACK GRAPH
+    # ===================================================================
+    doc.add_heading(f"{sec_idx}. Mô hình hóa Mối đe dọa & Đồ thị Tấn công Bayesian (Threat Modeling & Attack Graph)", level=1)
+    sec_idx += 1
+    _build_threat_modeling_section(doc, report_data)
 
     # ===================================================================
     # 4. METHODOLOGY (Kill Chain Timeline)
@@ -890,6 +897,149 @@ def _build_methodology_table(doc, methodology: list[dict]) -> None:
                     run.font.size = Pt(9)
 
 
+def _build_threat_modeling_section(doc, report_data: dict) -> None:
+    """Build the Threat Modeling & Bayesian Attack Graph section in DOCX."""
+    graph_summary = report_data.get("attack_graph_summary", {})
+    mermaid_str = report_data.get("attack_graph_mermaid", "")
+    owasp_breakdown = report_data.get("owasp_breakdown", {})
+    mitre_breakdown = report_data.get("mitre_breakdown", {})
+
+    intro_p = doc.add_paragraph(
+        "Mô hình đồ thị tấn công Bayesian phân tích đa bước cho phép đánh giá định lượng xác suất "
+        "kẻ tấn công leo thang đặc quyền từ vòng ngoài Internet đến các tài sản trọng yếu (Database, Host OS, Admin Console). "
+        "Dữ liệu được liên kết và đối chiếu trực tiếp với khung chuẩn OWASP Top 10 (2021) và MITRE ATT&CK Matrix."
+    )
+    intro_p.paragraph_format.space_after = Pt(8)
+
+    # 1. Critical Attack Path Callout Box
+    crit_prob = graph_summary.get("critical_path_probability", 0.0)
+    crit_chain = graph_summary.get("critical_path_chain", "None")
+    if crit_prob > 0 and crit_chain != "None":
+        prob_pct = round(crit_prob * 100, 1)
+        tbl = doc.add_table(rows=2, cols=1)
+        tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+        tbl.autofit = False
+
+        # Header callout cell
+        hdr_cell = tbl.rows[0].cells[0]
+        _set_cell_shading(hdr_cell, "DC2626" if prob_pct >= 60 else "EA580C")
+        hp = hdr_cell.paragraphs[0]
+        hrun = hp.add_run(f"🚨 ĐƯỜNG DẪN XÂM NHẬP NGUY HIỂM NHẤT (CRITICAL ATTACK PATH) — XÁC SUẤT: {prob_pct}%")
+        hrun.font.name = "Calibri"
+        hrun.font.size = Pt(11)
+        hrun.bold = True
+        hrun.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+
+        # Body cell
+        body_cell = tbl.rows[1].cells[0]
+        _set_cell_shading(body_cell, "FEE2E2" if prob_pct >= 60 else "FFF7ED")
+        bp = body_cell.paragraphs[0]
+        brun = bp.add_run(f"Chuỗi thâm nhập thực nghiệm:\n{crit_chain}")
+        brun.font.name = "Consolas"
+        brun.font.size = Pt(10)
+        brun.bold = True
+
+        doc.add_paragraph("").paragraph_format.space_after = Pt(4)
+
+    # 2. Top Viable Kill-Chain Paths
+    top_paths = graph_summary.get("top_paths", [])
+    if top_paths:
+        _styled_paragraph(doc, "Các Chuỗi Xâm Nhập Khả Thi (Viable Kill-Chain Paths):", font_size=11, bold=True, space_after=4)
+        path_tbl = doc.add_table(rows=1 + len(top_paths[:6]), cols=2)
+        path_tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+        _add_header_row(path_tbl, ["STT", "Chuỗi Tấn Công & Xác Suất Thâm Nhập (Bayesian Likelihood)"])
+
+        for idx, p_text in enumerate(top_paths[:6], 1):
+            row = path_tbl.rows[idx]
+            _prevent_row_split(row)
+            c0, c1 = row.cells[0], row.cells[1]
+            _set_cell_shading(c0, "F8FAFC" if idx % 2 == 1 else "FFFFFF")
+            _set_cell_shading(c1, "F8FAFC" if idx % 2 == 1 else "FFFFFF")
+
+            p0 = c0.paragraphs[0]
+            r0 = p0.add_run(str(idx))
+            r0.font.name = "Calibri"
+            r0.font.size = Pt(10)
+            r0.bold = True
+
+            p1 = c1.paragraphs[0]
+            r1 = p1.add_run(p_text)
+            r1.font.name = "Calibri"
+            r1.font.size = Pt(9.5)
+
+        doc.add_paragraph("").paragraph_format.space_after = Pt(6)
+
+    # 3. OWASP Top 10 (2021) Breakdown Table
+    if owasp_breakdown:
+        _styled_paragraph(doc, "Phân loại Lỗ hổng theo Chuẩn OWASP Top 10 (2021):", font_size=11, bold=True, space_after=4)
+        owasp_tbl = doc.add_table(rows=1 + len(owasp_breakdown), cols=3)
+        owasp_tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+        _add_header_row(owasp_tbl, ["Danh mục OWASP 2021", "Số lượng Phát hiện", "Mức độ Ảnh hưởng"])
+
+        for idx, (cat, cnt) in enumerate(owasp_breakdown.items(), 1):
+            row = owasp_tbl.rows[idx]
+            _prevent_row_split(row)
+            c0, c1, c2 = row.cells[0], row.cells[1], row.cells[2]
+            _set_cell_shading(c0, "F8FAFC" if idx % 2 == 1 else "FFFFFF")
+            _set_cell_shading(c1, "F8FAFC" if idx % 2 == 1 else "FFFFFF")
+            _set_cell_shading(c2, "F8FAFC" if idx % 2 == 1 else "FFFFFF")
+
+            r0 = c0.paragraphs[0].add_run(cat)
+            r0.font.name = "Calibri"
+            r0.font.size = Pt(9.5)
+            r0.bold = True
+
+            r1 = c1.paragraphs[0].add_run(f"{cnt} lỗ hổng")
+            r1.font.name = "Calibri"
+            r1.font.size = Pt(9.5)
+
+            r2 = c2.paragraphs[0].add_run("Đã kiểm chứng tự động")
+            r2.font.name = "Calibri"
+            r2.font.size = Pt(9)
+
+        doc.add_paragraph("").paragraph_format.space_after = Pt(6)
+
+    # 4. MITRE ATT&CK Matrix Mapping Table
+    if mitre_breakdown:
+        _styled_paragraph(doc, "Ánh xạ Kỹ thuật Tấn công MITRE ATT&CK Matrix:", font_size=11, bold=True, space_after=4)
+        mitre_items = list(mitre_breakdown.items())[:10]
+        mitre_tbl = doc.add_table(rows=1 + len(mitre_items), cols=2)
+        mitre_tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+        _add_header_row(mitre_tbl, ["Kỹ thuật MITRE ATT&CK", "Số lượng Lỗ hổng Liên đới"])
+
+        for idx, (tech, cnt) in enumerate(mitre_items, 1):
+            row = mitre_tbl.rows[idx]
+            _prevent_row_split(row)
+            c0, c1 = row.cells[0], row.cells[1]
+            _set_cell_shading(c0, "F8FAFC" if idx % 2 == 1 else "FFFFFF")
+            _set_cell_shading(c1, "F8FAFC" if idx % 2 == 1 else "FFFFFF")
+
+            r0 = c0.paragraphs[0].add_run(tech)
+            r0.font.name = "Calibri"
+            r0.font.size = Pt(9.5)
+            r0.bold = True
+
+            r1 = c1.paragraphs[0].add_run(f"{cnt} phát hiện")
+            r1.font.name = "Calibri"
+            r1.font.size = Pt(9.5)
+
+        doc.add_paragraph("").paragraph_format.space_after = Pt(6)
+
+    # 5. Mermaid Syntax Export Block for CI/CD & DevOps
+    if mermaid_str:
+        _styled_paragraph(doc, "Mã Nguồn Đồ Thị Tấn Công (Mermaid Flowchart Specification):", font_size=10, bold=True, space_after=2)
+        mm_tbl = doc.add_table(rows=1, cols=1)
+        mm_tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+        cell = mm_tbl.rows[0].cells[0]
+        _set_cell_shading(cell, "F1F5F9")
+        p = cell.paragraphs[0]
+        run = p.add_run(mermaid_str)
+        run.font.name = "Consolas"
+        run.font.size = Pt(8.5)
+        run.font.color.rgb = RGBColor(0x33, 0x41, 0x55)
+        doc.add_paragraph("").paragraph_format.space_after = Pt(6)
+
+
 def _build_attack_surface_section(doc, attack_surface: dict, report_data: dict | None = None) -> None:
     """Build the Attack Surface section in the DOCX report."""
     if not attack_surface:
@@ -1390,6 +1540,14 @@ def _build_finding_section(doc, index: int, finding: dict) -> None:
     cvss_score = finding.get("cvss_score")
     if cvss_score is not None and str(cvss_score).strip():
         detail_rows.append(("Điểm CVSS:", str(cvss_score)))
+
+    owasp = str(finding.get("owasp_category") or "").strip()
+    if owasp:
+        detail_rows.append(("OWASP Top 10:", owasp))
+
+    mitre_tech = finding.get("mitre_techniques") or []
+    if mitre_tech:
+        detail_rows.append(("MITRE ATT&CK:", ", ".join(mitre_tech)))
 
     details_table = doc.add_table(rows=len(detail_rows), cols=2)
     details_table.alignment = WD_TABLE_ALIGNMENT.LEFT

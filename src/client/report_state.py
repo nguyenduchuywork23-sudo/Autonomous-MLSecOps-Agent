@@ -13,7 +13,7 @@ import json
 import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Any
 
 # ---------------------------------------------------------------------------
 # Pre-compiled Regular Expressions for Attack Surface Discovery
@@ -38,6 +38,9 @@ class Finding:
     timestamp: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     cve_id: str = ""
     cvss_score: Optional[float] = None
+    owasp_category: str = ""
+    mitre_tactics: list[str] = field(default_factory=list)
+    mitre_techniques: list[str] = field(default_factory=list)
 
     # Valid severity levels (ordered by priority)
     SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
@@ -69,6 +72,90 @@ class Finding:
                 self.cvss_score = float(self.cvss_score)
             except (ValueError, TypeError):
                 self.cvss_score = None
+
+        if not self.owasp_category or not self.mitre_techniques:
+            self._auto_map_frameworks()
+
+    def _auto_map_frameworks(self) -> None:
+        """Automatically classify finding into OWASP Top 10 (2021) and MITRE ATT&CK Matrix."""
+        text = f"{self.title} {self.description} {self.tool_source} {self.cve_id}".lower()
+
+        # 1. SQL Injection
+        if re.search(r"\b(sql|sqli)\b|injection", text):
+            self.owasp_category = self.owasp_category or "A03:2021 - Injection"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Initial Access", "Execution"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1190 - Exploit Public-Facing Application"]
+        # 2. Reflected / Stored Cross-Site Scripting (XSS)
+        elif re.search(r"\bxss\b|cross-site scripting", text):
+            self.owasp_category = self.owasp_category or "A03:2021 - Injection"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Initial Access", "Execution"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1059.007 - JavaScript", "T1189 - Drive-by Compromise"]
+        # 3. Remote Code / Command Execution (RCE) — use word boundary so 'force' does not match
+        elif re.search(r"\brce\b|remote code|command execution|code execution", text):
+            self.owasp_category = self.owasp_category or "A03:2021 - Injection"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Execution", "Lateral Movement"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1059 - Command and Scripting Interpreter", "T1203 - Exploitation for Client Execution"]
+        # 4. Server-Side Request Forgery (SSRF)
+        elif re.search(r"\bssrf\b|request forgery", text):
+            self.owasp_category = self.owasp_category or "A10:2021 - Server-Side Request Forgery (SSRF)"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Initial Access", "Lateral Movement"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1090 - Proxy", "T1190 - Exploit Public-Facing Application"]
+        # 5. Outdated Components & Known CVEs
+        elif re.search(r"cve-\d{4}-\d+|outdated|vulnerable component|wpscan|joomla|drupal", text):
+            self.owasp_category = self.owasp_category or "A06:2021 - Vulnerable and Outdated Components"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Initial Access"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1190 - Exploit Public-Facing Application"]
+        # 6. CORS & Session / Cookie Issues
+        elif re.search(r"\bcors\b|\bcookie\b|\bhttponly\b|\bsamesite\b|access-control-allow|session flag", text):
+            self.owasp_category = self.owasp_category or "A01:2021 - Broken Access Control"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Credential Access", "Defense Evasion"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1539 - Steal Web Session Cookie", "T1557 - Adversary-in-the-Middle"]
+        # 7. Sensitive Files, Backups & Secret Leaks
+        elif re.search(r"sensitive|\.env\b|\.git\b|backup|dump|leak|config exposure", text):
+            self.owasp_category = self.owasp_category or "A05:2021 - Security Misconfiguration"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Discovery", "Credential Access"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1552 - Unsecured Credentials", "T1584 - Compromise Infrastructure"]
+        # 8. Authentication & Password Brute Force
+        elif re.search(r"\bbrute\b|\bhydra\b|password|credential|auth bypass|login brute", text):
+            self.owasp_category = self.owasp_category or "A07:2021 - Identification and Authentication Failures"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Credential Access"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1110 - Brute Force", "T1110.001 - Password Guessing"]
+        # 9. Path / Directory Traversal & LFI
+        elif re.search(r"traversal|\blfi\b|path traversal|directory traversal", text):
+            self.owasp_category = self.owasp_category or "A01:2021 - Broken Access Control"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Discovery", "Credential Access"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1083 - File and Directory Discovery"]
+        # 10. SSL / Cryptographic Failures
+        elif re.search(r"\bssl\b|\btls\b|\bcipher\b|testssl|cleartext|unencrypted|cert", text):
+            self.owasp_category = self.owasp_category or "A02:2021 - Cryptographic Failures"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Credential Access", "Discovery"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1557 - Adversary-in-the-Middle", "T1040 - Network Sniffing"]
+        else:
+            self.owasp_category = self.owasp_category or "A05:2021 - Security Misconfiguration"
+            if not self.mitre_tactics:
+                self.mitre_tactics = ["Discovery"]
+            if not self.mitre_techniques:
+                self.mitre_techniques = ["T1046 - Network Service Discovery"]
 
 
 @dataclass
@@ -219,7 +306,7 @@ class ReportState:
 
     This acts as the shared memory between the Red Teamer and Reporter agents.
     The Reporter updates this after every tool execution, and the DOCX generator
-    reads the final state to produce the enterprise report.
+    reads the final state to produce the assessment report.
     """
 
     def __init__(self, target: str, scan_mode: str = "recon", mission_objective: str = "", target_objective: str = ""):
@@ -1637,6 +1724,27 @@ class ReportState:
         """Return findings sorted by severity (CRITICAL first)."""
         return sorted(self.findings, key=lambda f: Finding.SEVERITY_ORDER.get(f.severity, 4))
 
+    def get_owasp_breakdown(self) -> dict[str, int]:
+        """Aggregate finding counts by OWASP Top 10 (2021) category."""
+        breakdown: dict[str, int] = {}
+        for f in self.findings:
+            cat = f.owasp_category or "A05:2021 - Security Misconfiguration"
+            breakdown[cat] = breakdown.get(cat, 0) + 1
+        return dict(sorted(breakdown.items(), key=lambda x: x[1], reverse=True))
+
+    def get_mitre_breakdown(self) -> dict[str, int]:
+        """Aggregate finding counts by MITRE ATT&CK techniques."""
+        breakdown: dict[str, int] = {}
+        for f in self.findings:
+            for tech in f.mitre_techniques:
+                breakdown[tech] = breakdown.get(tech, 0) + 1
+        return dict(sorted(breakdown.items(), key=lambda x: x[1], reverse=True))
+
+    def generate_attack_graph(self) -> Any:
+        """Construct and return the Bayesian Attack Graph for the engagement."""
+        from src.utils.attack_graph import BayesianAttackGraph
+        return BayesianAttackGraph.build_from_report_state(self)
+
     # ---------------------------------------------------------------
     # Serialization
     # ---------------------------------------------------------------
@@ -1749,6 +1857,10 @@ class ReportState:
             "milestones": [m.to_dict() for m in self.milestones],
             "rag_applied_patterns": self.rag_applied_patterns,
             "rag_stored_patterns": self.rag_stored_patterns,
+            "owasp_breakdown": self.get_owasp_breakdown(),
+            "mitre_breakdown": self.get_mitre_breakdown(),
+            "attack_graph_summary": self.generate_attack_graph().to_summary_dict(),
+            "attack_graph_mermaid": self.generate_attack_graph().to_mermaid(),
         }
 
     def to_json(self) -> str:
@@ -1781,7 +1893,7 @@ class ReportState:
             f"# BÁO CÁO ĐÁNH GIÁ AN TOÀN THÔNG TIN TOÀN DIỆN — {self.target}",
             "",
             "> **BẢO MẬT & LƯU HÀNH NỘI BỘ (CONFIDENTIAL)**  ",
-            f"> Hệ thống thẩm định: **MLSecOps Agent v4.1 (Cognitive Relentless Pursuit Engine)**  ",
+            f"> Hệ thống thẩm định: **Autonomous MLSecOps Agent (Cognitive Relentless Pursuit Engine)**  ",
             f"> Ngày báo cáo: **{datetime.now().strftime('%d/%m/%Y %H:%M:%S')}**",
             "",
             "---",
@@ -1815,7 +1927,7 @@ class ReportState:
             "",
             "## 2. TÓM TẮT ĐIỀU HÀNH (EXECUTIVE SUMMARY)",
             "",
-            self.executive_summary or f"Cuộc đánh giá an toàn thông tin toàn diện đã được tiến hành trên mục tiêu `{self.target}` bởi hệ thống MLSecOps Agent v4.1.",
+            self.executive_summary or f"Cuộc đánh giá an toàn thông tin toàn diện đã được tiến hành trên mục tiêu `{self.target}` bởi hệ thống Autonomous MLSecOps Agent.",
             "",
             "### 2.1. Phân Bổ Mức Độ Nghiêm Trọng Của Lỗ Hổng",
             "",
@@ -2062,13 +2174,27 @@ class ReportState:
                 "",
             ])
 
-        # 4. Compound Threat Scenarios
+        # 4. Compound Threat Scenarios & Bayesian Attack Graph
+        attack_graph = self.generate_attack_graph()
+        crit_path = attack_graph.get_critical_path()
+        all_paths = attack_graph.find_all_attack_paths()
+        owasp_breakdown = self.get_owasp_breakdown()
+        mitre_breakdown = self.get_mitre_breakdown()
         compound_threats = [f for f in self.findings if "[CHUỖI TẤN CÔNG]" in f.title]
+
+        lines.extend([
+            "---",
+            "",
+            "## 4. KỊCH BẢN KHAI THÁC PHỨC HỢP & MÔ HÌNH HÓA ĐỒ THỊ TẤN CÔNG BAYESIAN (BAYESIAN ATTACK GRAPH & THREAT MODELING)",
+            "",
+            "Hệ thống tự động tổng hợp toàn bộ điểm yếu và bề mặt tấn công thành Đồ thị Tấn công Bayesian động, "
+            "tính toán xác suất thâm nhập tích lũy và định vị đường dẫn xâm nhập nguy hiểm nhất đến các tài sản trọng yếu (Crown Jewels).",
+            "",
+        ])
+
         if compound_threats:
             lines.extend([
-                "---",
-                "",
-                "## 4. KỊCH BẢN KHAI THÁC PHỨC HỢP (COMPOUND ATTACK SCENARIOS & ATTACK CHAINING)",
+                "### 4.1. Kịch Bản Khai Thác Phức Hợp (Compound Attack Scenarios & Attack Chaining)",
                 "",
                 "Động cơ Tương quan Lỗ hổng (Vulnerability Correlation Engine) đã tự động liên kết các điểm yếu riêng lẻ thành các chuỗi kịch bản tấn công nguy hại:",
                 "",
@@ -2078,6 +2204,63 @@ class ReportState:
             for ct in compound_threats:
                 t_title = ct.title.replace("[CHUỖI TẤN CÔNG]", "").strip()
                 lines.append(f"| **{t_title}** | `{ct.severity}` | **{ct.cvss_score or 'N/A'}** | {ct.description} |")
+            lines.append("")
+
+        if crit_path:
+            crit_pct = round(crit_path.cumulative_probability * 100, 1)
+            chain_str = " ➔ ".join(crit_path.node_ids)
+            lines.extend([
+                f"> 🚨 **ĐƯỜNG DẪN XÂM NHẬP NGUY HIỂM NHẤT (CRITICAL ATTACK PATH):**  ",
+                f"> **Chuỗi tấn công:** `{chain_str}`  ",
+                f"> **Mức độ rủi ro:** `{crit_path.risk_label}` | **Xác suất thâm nhập thành công:** **{crit_pct}%**  ",
+                f"> **Mục tiêu bị đe dọa trực tiếp:** `{crit_path.target_crown_jewel}`",
+                "",
+            ])
+
+        # Mermaid Graph Diagram
+        lines.extend([
+            "### 4.2. Sơ Đồ Đồ Thị Tấn Công (Visual Attack Graph)",
+            "",
+            attack_graph.to_mermaid(),
+            "",
+        ])
+
+        # Attack Paths Table
+        if all_paths:
+            lines.extend([
+                "### 4.3. Danh Mục Các Chuỗi Xâm Nhập Khả Thi (Viable Kill-Chain Paths)",
+                "",
+                "| Mức độ Rủi ro | Xác suất Thành công | Chuỗi Xâm nhập (Kill-Chain Vector) | Tài sản Trọng yếu |",
+                "|---|---|---|---|",
+            ])
+            for p in all_paths[:8]:
+                p_pct = round(p.cumulative_probability * 100, 1)
+                p_chain = " ➔ ".join(p.node_ids)
+                lines.append(f"| `{p.risk_label}` | **{p_pct}%** | `{p_chain}` | `{p.target_crown_jewel}` |")
+            lines.append("")
+
+        # OWASP Top 10 Breakdown
+        if owasp_breakdown:
+            lines.extend([
+                "### 4.4. Phân Loại Theo OWASP Top 10 (2021)",
+                "",
+                "| Danh mục OWASP Top 10 (2021) | Số lượng Phát hiện | Mức độ Ảnh hưởng |",
+                "|---|---|---|",
+            ])
+            for cat, cnt in owasp_breakdown.items():
+                lines.append(f"| **{cat}** | `{cnt}` lỗ hổng | Đã ánh xạ kiểm thử tự động |")
+            lines.append("")
+
+        # MITRE ATT&CK Matrix Breakdown
+        if mitre_breakdown:
+            lines.extend([
+                "### 4.5. Ánh Xạ Ma Trận Chiến Thuật & Kỹ Thuật MITRE ATT&CK",
+                "",
+                "| Kỹ thuật MITRE ATT&CK | Số lượng Lỗ hổng Liên đới | Giai đoạn Chiến thuật (Tactic) |",
+                "|---|---|---|",
+            ])
+            for tech, cnt in list(mitre_breakdown.items())[:12]:
+                lines.append(f"| `{tech}` | `{cnt}` | Initial Access / Execution / Lateral Movement |")
             lines.append("")
 
         # 5. Methodology
@@ -2107,6 +2290,7 @@ class ReportState:
             lines.append("Không phát hiện lỗ hổng đáng kể nào trong quá trình kiểm thử.")
         else:
             for idx, f in enumerate(self.get_findings_sorted(), 1):
+                mitre_str = ", ".join(f.mitre_techniques) if getattr(f, "mitre_techniques", None) else "N/A"
                 lines.extend([
                     f"### 6.{idx}. [{f.severity}] {f.title}",
                     "",
@@ -2115,6 +2299,8 @@ class ReportState:
                     f"| **Mức độ nghiêm trọng** | **`{f.severity}`** |",
                     f"| **Mã CVE** | `{f.cve_id or 'N/A'}` |",
                     f"| **Điểm CVSS v3.1** | **{f.cvss_score if f.cvss_score is not None else 'N/A'}** |",
+                    f"| **Danh mục OWASP (2021)** | `{getattr(f, 'owasp_category', '') or 'N/A'}` |",
+                    f"| **Kỹ thuật MITRE ATT&CK** | `{mitre_str}` |",
                     f"| **Công cụ phát hiện** | `{f.tool_source or 'N/A'}` |",
                     f"| **Thời gian phát hiện** | `{f.timestamp}` |",
                     "",

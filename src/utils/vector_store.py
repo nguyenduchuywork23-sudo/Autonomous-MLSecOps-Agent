@@ -1,4 +1,4 @@
-"""Enterprise-Grade RAG Long-Term Memory System (Vector Store).
+"""Autonomous Tactical RAG Long-Term Memory System (Vector Store).
 
 Provides context-aware tactical memory for autonomous red team agents:
 1. Checkpoint 1: Metadata Pre-filtering (Scalar filters eliminating ~90% irrelevant data)
@@ -120,7 +120,7 @@ class CachedEmbeddingFunction(EmbeddingFunction):
 class VectorMemoryManager:
     """Manages persistent vector collections for attack patterns and target recon.
 
-    Enterprise-grade multi-stage RAG:
+    High-performance multi-stage RAG:
     - Pre-filtering: Metadata hard-filter before vector distance calculation
     - Vector index: HNSW with tuned M=32, ef=100
     - Re-ranking: 0.5 * FlashRank (MiniLM-L-12) + 0.3 * Domain Heuristic + 0.2 * Cosine Sim

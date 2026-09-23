@@ -1510,7 +1510,7 @@ def _export_all_reports(report_state: ReportState, audit_path: str, target_raw_s
     report_path = ""
     if cfg_get("reports.generate_word", True):
         try:
-            console.print("[bold yellow][*] Generating Enterprise DOCX...[/bold yellow]")
+            console.print("[bold yellow][*] Generating DOCX Report...[/bold yellow]")
             report_path = generate_docx_report(report_state.to_dict(), audit_path)
             console.print(f"[bold green][+] DOCX Report: {report_path}[/bold green]")
         except Exception as e:
@@ -1559,6 +1559,18 @@ def _export_all_reports(report_state: ReportState, audit_path: str, target_raw_s
     summary_table.add_row("Chỉ số Rủi ro (Risk Score)", f"{risk_score:.1f}/10 ({risk_label})")
     summary_table.add_row("Tổng số Phát hiện (Findings)", f"{len(report_state.findings)} (CRIT: {counts['CRITICAL']}, HIGH: {counts['HIGH']}, MED: {counts['MEDIUM']}, LOW: {counts['LOW']}, INFO: {counts['INFO']})")
     summary_table.add_row("Tổng số Bước Thực thi (Kill Chain)", f"{len(report_state.methodology)} bước công cụ")
+
+    # Threat Modeling & Bayesian Attack Graph summary rows
+    try:
+        crit_path = report_state.generate_attack_graph().get_critical_path()
+        if crit_path:
+            summary_table.add_row("Đường dẫn Nguy hiểm nhất", crit_path.to_summary())
+    except Exception:
+        pass
+
+    mitre_count = len(report_state.get_mitre_breakdown())
+    if mitre_count > 0:
+        summary_table.add_row("Khung MITRE ATT&CK", f"{mitre_count} kỹ thuật chiến thuật đã ánh xạ")
 
     if report_path:
         summary_table.add_row("Báo cáo Word (DOCX)", f"[bold link=file:///{os.path.abspath(report_path)}]{report_path}[/bold link]")
@@ -1826,7 +1838,7 @@ async def run_agent(prompt: str, server_script: str | None = None,
         args=[server_path],
     )
 
-    # ━━━ RAG Long-term Memory Initialization (Enterprise-grade) ━━━
+    # ━━━ RAG Long-term Memory Initialization ━━━
     vectordb_cfg = config.get("vectordb", {})
     vector_memory = None
     if vectordb_cfg.get("enabled", False):
@@ -2783,6 +2795,12 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             summary_table.add_row("LOW", str(severity_counts["LOW"]))
                             summary_table.add_row("Tools Used", str(len(tools_called)))
                             summary_table.add_row("Iterations", str(iteration))
+                            try:
+                                crit = report_state.generate_attack_graph().get_critical_path()
+                                if crit:
+                                    summary_table.add_row("Critical Path", crit.to_summary())
+                            except Exception:
+                                pass
                             console.print(summary_table)
 
                             audit.log("session_end", {
@@ -2941,6 +2959,12 @@ async def run_agent(prompt: str, server_script: str | None = None,
                         summary_table.add_row("LOW", str(severity_counts["LOW"]))
                         summary_table.add_row("Tools Used", str(len(tools_called)))
                         summary_table.add_row("Iterations", str(iteration))
+                        try:
+                            crit = report_state.generate_attack_graph().get_critical_path()
+                            if crit:
+                                summary_table.add_row("Critical Path", crit.to_summary())
+                        except Exception:
+                            pass
                         console.print(summary_table)
 
                         audit.log("session_end", {

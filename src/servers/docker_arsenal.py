@@ -1,4 +1,4 @@
-"""MCP Server: Docker Arsenal v4.1 — 100% Container-based Security Toolkit.
+"""MCP Server: Docker Arsenal — Container-based Security Toolkit.
 
 Every tool invokes a Docker container via subprocess, ensuring full
 environment isolation and OPSEC. Context Distillation is applied to
@@ -1210,7 +1210,7 @@ def docker_testssl(target_host: str) -> str:
 
 
 # ===========================================================================
-# Tool 16: Sensitive Files & Backup Scanner — NEW v4.1 Big Update
+# Tool 16: Sensitive Files & Backup Scanner
 # ===========================================================================
 
 @mcp.tool()
@@ -1322,7 +1322,7 @@ def docker_sensitive_files_scan(target_url: str) -> str:
 
 
 # ===========================================================================
-# Tool 17: CORS Misconfiguration & Security Headers Audit — NEW v4.1 Big Update
+# Tool 17: CORS Misconfiguration & Security Headers Audit
 # ===========================================================================
 
 @mcp.tool()
@@ -1425,7 +1425,7 @@ def docker_cors_scan(target_url: str) -> str:
 
 
 # ===========================================================================
-# Tool 18: Parameterized Reflected XSS Fuzzing Probe — NEW v4.1 Big Update
+# Tool 18: Parameterized Reflected XSS Fuzzing Probe
 # ===========================================================================
 
 @mcp.tool()
@@ -1514,7 +1514,7 @@ def docker_xss_scan(target_url: str) -> str:
 
 
 # ===========================================================================
-# Tool 19: Multi-Target Active HTTP/HTTPS Alive Probe — NEW v4.1 Big Update
+# Tool 19: Multi-Target Active HTTP/HTTPS Alive Probe
 # ===========================================================================
 
 @mcp.tool()

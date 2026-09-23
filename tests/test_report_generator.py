@@ -250,8 +250,8 @@ class TestDocxGeneration:
         assert "9.8" in full_text
 
     @patch("src.utils.report_generator.cfg_get")
-    def test_empty_report_uses_v4_1_text(self, mock_cfg_get, empty_report_data, tmp_path):
-        """Default executive summary in empty report should mention MLSecOps Agent v4.1."""
+    def test_empty_report_uses_default_agent_text(self, mock_cfg_get, empty_report_data, tmp_path):
+        """Default executive summary in empty report should mention Autonomous MLSecOps Agent."""
         mock_cfg_get.side_effect = lambda key, default=None: {
             "reports.output_dir": str(tmp_path),
             "reports.company_name": "Version Test",
@@ -264,7 +264,7 @@ class TestDocxGeneration:
         doc = DocxDocument(result)
 
         full_text = "\n".join(p.text for p in doc.paragraphs)
-        assert "MLSecOps Agent v4.1" in full_text
+        assert "Autonomous MLSecOps Agent" in full_text
 
     @patch("src.utils.report_generator.cfg_get")
     def test_docx_contains_rag_memory_section(self, mock_cfg_get, sample_report_data, tmp_path):
