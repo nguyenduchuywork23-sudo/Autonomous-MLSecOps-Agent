@@ -76,8 +76,26 @@ _RE_CLEAN_PROTOCOL = re.compile(r"^https?://")
 _RE_CLEAN_DEFAULT_PORTS = re.compile(r":(80|443)(/|$)")
 _RE_DOMAIN_EXTRACT = re.compile(r'(?:https?://)?([a-zA-Z0-9.-]+)')
 
-# Strip Qwen3.5 thinking mode tags (<think>...</think>) before JSON extraction
-_RE_THINK_TAGS = re.compile(r'<think>.*?</think>', re.DOTALL)
+# Strip Qwen3.5 thinking mode tags (<think>...</think> or unclosed <think>...) before JSON extraction
+_RE_THINK_TAGS = re.compile(r'<think>.*?(?:</think>|$)', re.DOTALL)
+
+
+def _clean_thinking_tags(text: str) -> str:
+    """Clean Qwen thinking mode tags (<think>...</think> or trailing unclosed <think>...).
+
+    If stripping leaves no text but the original text contains JSON brackets ({ ... }),
+    safely strip only the delimiter tags themselves so JSON parsing can succeed.
+    """
+    if not text:
+        return text
+    cleaned = _RE_THINK_TAGS.sub("", text).strip()
+    if cleaned:
+        return cleaned
+    # If cleaned is empty, check if original text had JSON brackets
+    if "{" in text and "}" in text:
+        # Strip just the delimiter tags themselves
+        return re.sub(r'</?think>', '', text).strip()
+    return text.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +384,101 @@ def _repair_truncated_json(text: str) -> dict | None:
         }
 
     return None
+
+
+def _extract_reporter_fallback(content: str) -> dict:
+    """Heuristic fallback extractor for Reporter when strict JSON parsing fails.
+
+    Salvages risk_score, suggestions, comments, objective progress, and partial findings
+    to ensure Red Teamer never loses guidance due to punctuation/quote glitches.
+    """
+    if not content:
+        return {}
+
+    result = {
+        "new_findings": [],
+        "risk_score": 0.0,
+        "suggestion": "",
+        "step_comment": "",
+        "objective_assessment": "",
+        "blocking_factor": "",
+        "attack_pattern": {},
+    }
+
+    # 1. Extract risk_score
+    risk_match = re.search(r'"risk_score"\s*:\s*([0-9]+(?:\.[0-9]+)?)', content)
+    if risk_match:
+        try:
+            result["risk_score"] = float(risk_match.group(1))
+        except ValueError:
+            pass
+
+    # 2. Extract suggestion_for_redteam
+    sug_match = re.search(r'"(?:suggestion_for_redteam|suggestion)"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+    if sug_match:
+        result["suggestion"] = sug_match.group(1).replace(r'\"', '"').replace(r'\n', ' ').strip()
+    else:
+        # Fallback to looser line-based capture
+        sug_line = re.search(r'"(?:suggestion_for_redteam|suggestion)"\s*:\s*"?([^,\n}]+)', content)
+        if sug_line:
+            result["suggestion"] = sug_line.group(1).strip().strip('"')
+
+    # 3. Extract step_comment
+    cmt_match = re.search(r'"step_comment"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+    if cmt_match:
+        result["step_comment"] = cmt_match.group(1).replace(r'\"', '"').replace(r'\n', ' ').strip()
+
+    # 4. Extract objective_assessment
+    obj_match = re.search(r'"objective_assessment"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+    if obj_match:
+        result["objective_assessment"] = obj_match.group(1).replace(r'\"', '"').replace(r'\n', ' ').strip()
+
+    # 5. Extract blocking_factor
+    blk_match = re.search(r'"blocking_factor"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+    if blk_match:
+        result["blocking_factor"] = blk_match.group(1).replace(r'\"', '"').replace(r'\n', ' ').strip()
+
+    # 6. Extract heuristic findings if present
+    finding_matches = re.finditer(r'\{[^{}]*"title"\s*:\s*"([^"]+)"[^{}]*"severity"\s*:\s*"([A-Z]+)"[^{}]*\}', content)
+    for fm in finding_matches:
+        f_block = fm.group(0)
+        title = fm.group(1)
+        severity = fm.group(2)
+        desc_m = re.search(r'"description"\s*:\s*"((?:[^"\\]|\\.)*)"', f_block)
+        desc = desc_m.group(1) if desc_m else ""
+        cve_m = re.search(r'"cve_id"\s*:\s*"([^"]+)"', f_block)
+        cve = cve_m.group(1) if cve_m else ""
+        result["new_findings"].append({
+            "title": title,
+            "severity": severity,
+            "description": desc,
+            "cve_id": cve,
+        })
+
+    # Return dict if at least one meaningful field was salvaged
+    if result["suggestion"] or result["risk_score"] > 0 or result["step_comment"] or result["new_findings"]:
+        return result
+    return {}
+
+
+def _truncate_tool_output_for_llm(result_str: str, max_chars: int = 6000) -> str:
+    """Smartly truncate large tool output before feeding into LLM prompt.
+
+    Preserves head (initial discovery, status, open ports) and tail (totals, summary,
+    last endpoints), preventing context bloat while keeping high-value signal.
+    Full output remains in ReportState and audit trail.
+    """
+    if not result_str or len(result_str) <= max_chars:
+        return result_str
+    head_len = int(max_chars * 0.6)  # e.g., 3600 chars
+    tail_len = max_chars - head_len  # e.g., 2400 chars
+    omitted = len(result_str) - max_chars
+    return (
+        f"{result_str[:head_len]}\n\n"
+        f"[... Đã rút gọn {omitted} ký tự trung gian để tối ưu hóa bộ nhớ context. "
+        f"Toàn bộ chi tiết kỹ thuật và bề mặt tấn công đã được cập nhật vào ReportState ...] \n\n"
+        f"{result_str[-tail_len:]}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1073,12 +1186,21 @@ QUY TẮC NGHIÊM NGẶT:
             "model": reporter_model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": reporter_temp,
+            "response_format": {"type": "json_object"},
+        }
+        reporter_options = {
+            "num_ctx": int(cfg_get("reporter.num_ctx", 8192)),
+            "num_predict": int(cfg_get("reporter.num_predict", 2048)),
         }
         num_gpu = cfg_get("reporter.num_gpu", cfg_get("llm.num_gpu"))
         if num_gpu is not None:
-            call_kwargs["extra_body"] = {"options": {"num_gpu": int(num_gpu)}, "reasoning_effort": "none"}
-        else:
-            call_kwargs["extra_body"] = {"reasoning_effort": "none"}
+            reporter_options["num_gpu"] = int(num_gpu)
+
+        call_kwargs["extra_body"] = {
+            "options": reporter_options,
+            "reasoning_effort": "none",
+            "keep_alive": cfg_get("reporter.keep_alive", cfg_get("llm.keep_alive", "15m")),
+        }
 
         response = await asyncio.wait_for(
             client.chat.completions.create(**call_kwargs),
@@ -1087,17 +1209,24 @@ QUY TẮC NGHIÊM NGẶT:
         msg = response.choices[0].message
         content = msg.content or getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None) or ""
         # Strip thinking tags from reporter output
-        content_clean = _RE_THINK_TAGS.sub("", content).strip()
+        content_clean = _clean_thinking_tags(content)
         if content_clean:
             content = content_clean
 
-        # Parse reporter's JSON response
-        parsed = _extract_json(content)
+        # Parse reporter's JSON response with heuristic fallback
+        try:
+            parsed = _extract_json(content)
+        except Exception as json_err:
+            logger.debug("Reporter JSON parse failed, trying heuristic fallback: %s", json_err)
+            parsed = _extract_reporter_fallback(content)
+
+        if not parsed:
+            return {}
 
         return {
             "new_findings": parsed.get("new_findings", []),
             "risk_score": float(parsed.get("risk_score", 0)),
-            "suggestion": parsed.get("suggestion_for_redteam", ""),
+            "suggestion": parsed.get("suggestion_for_redteam", "") or parsed.get("suggestion", ""),
             "step_comment": parsed.get("step_comment", ""),
             "objective_assessment": parsed.get("objective_assessment", ""),
             "blocking_factor": parsed.get("blocking_factor", ""),
@@ -1197,12 +1326,21 @@ Trả về JSON (KHÔNG text ngoài JSON):
             "model": reporter_model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": reporter_temp,
+            "response_format": {"type": "json_object"},
+        }
+        reporter_options = {
+            "num_ctx": int(cfg_get("reporter.num_ctx", 8192)),
+            "num_predict": int(cfg_get("reporter.num_predict", 2048)),
         }
         num_gpu = cfg_get("reporter.num_gpu", cfg_get("llm.num_gpu"))
         if num_gpu is not None:
-            call_kwargs["extra_body"] = {"options": {"num_gpu": int(num_gpu)}, "reasoning_effort": "none"}
-        else:
-            call_kwargs["extra_body"] = {"reasoning_effort": "none"}
+            reporter_options["num_gpu"] = int(num_gpu)
+
+        call_kwargs["extra_body"] = {
+            "options": reporter_options,
+            "reasoning_effort": "none",
+            "keep_alive": cfg_get("reporter.keep_alive", cfg_get("llm.keep_alive", "15m")),
+        }
 
         response = await asyncio.wait_for(
             client.chat.completions.create(**call_kwargs),
@@ -1211,10 +1349,20 @@ Trả về JSON (KHÔNG text ngoài JSON):
         msg = response.choices[0].message
         content = msg.content or getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None) or ""
         # Strip thinking tags
-        content_clean = _RE_THINK_TAGS.sub("", content).strip()
+        content_clean = _clean_thinking_tags(content)
         if content_clean:
             content = content_clean
-        parsed = _extract_json(content)
+
+        try:
+            parsed = _extract_json(content)
+        except Exception:
+            parsed = {}
+            ex_m = re.search(r'"executive_summary"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+            conc_m = re.search(r'"conclusion"\s*:\s*"((?:[^"\\]|\\.)*)"', content)
+            if ex_m:
+                parsed["executive_summary"] = ex_m.group(1).replace(r'\"', '"').replace(r'\n', ' ')
+            if conc_m:
+                parsed["conclusion"] = conc_m.group(1).replace(r'\"', '"').replace(r'\n', ' ')
 
         report_state.executive_summary = parsed.get("executive_summary", "")
         report_state.conclusion = parsed.get("conclusion", "")
@@ -1806,9 +1954,17 @@ async def run_agent(prompt: str, server_script: str | None = None,
     model = llm_cfg.get("model", "huihui_ai/qwen3.5-abliterated:9b")
     temperature = llm_cfg.get("temperature", 0.1)
     num_gpu = llm_cfg.get("num_gpu")
-    extra_body = {"options": {"num_gpu": int(num_gpu), "num_predict": 8192, "num_ctx": 16384}} if num_gpu is not None else {"options": {"num_predict": 8192, "num_ctx": 16384}}
-    # Enable JSON-only output via BOTH Ollama native + OpenAI-compatible APIs
-    extra_body["format"] = "json"  # Ollama native /api/ endpoint
+    num_ctx = int(llm_cfg.get("num_ctx", 16384))
+    num_predict = int(llm_cfg.get("num_predict", 8192))
+    keep_alive = llm_cfg.get("keep_alive", "15m")
+    llm_options = {"num_predict": num_predict, "num_ctx": num_ctx}
+    if num_gpu is not None:
+        llm_options["num_gpu"] = int(num_gpu)
+    extra_body = {
+        "options": llm_options,
+        "keep_alive": keep_alive,
+        "format": "json",
+    }
     max_iterations = agent_cfg.get("max_iterations", 25)
     context_window = min(agent_cfg.get("context_window_size", 30), 12)  # Cap at 12 to prevent context overflow
     retry_max = agent_cfg.get("retry_max", 2)
@@ -2279,7 +2435,7 @@ async def run_agent(prompt: str, server_script: str | None = None,
                     # Strip Qwen3.5 thinking mode <think>...</think> tags
                     # These cause JSON extraction failures by emitting long
                     # free-text reasoning before the actual JSON output.
-                    response_content_clean = _RE_THINK_TAGS.sub("", response_content).strip()
+                    response_content_clean = _clean_thinking_tags(response_content)
                     # If after stripping think tags there is usable content, prefer it
                     if response_content_clean:
                         response_content = response_content_clean
@@ -2292,7 +2448,11 @@ async def run_agent(prompt: str, server_script: str | None = None,
                     err_msg = str(llm_err).lower()
                     if ("cuda" in err_msg or "ptx" in err_msg or "0xc0000409" in err_msg or "llama-server" in err_msg) and extra_body.get("options", {}).get("num_gpu") != 0:
                         console.print("[bold yellow]⚡ Phát hiện lỗi CUDA/PTX JIT từ GPU driver — Tự động chuyển sang CPU an toàn (num_gpu=0)...[/bold yellow]")
-                        extra_body = {"options": {"num_gpu": 0, "num_predict": 4096, "num_ctx": 16384}}
+                        extra_body = {
+                            "options": {"num_gpu": 0, "num_predict": num_predict, "num_ctx": num_ctx},
+                            "keep_alive": keep_alive,
+                            "format": "json",
+                        }
                         audit.log("gpu_fallback_cpu", {"iteration": iteration, "error": str(llm_err)})
                         await asyncio.sleep(2)
                         continue
@@ -2718,7 +2878,8 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                             report_state.record_rag_applied_patterns(rescue_patterns)
                                     except Exception:
                                         pass
-                                tool_msg = f"Tool '{tool_name}' result: {result_str}"
+                                truncated_result = _truncate_tool_output_for_llm(result_str)
+                                tool_msg = f"Tool '{tool_name}' result: {truncated_result}"
                                 if feedback_block:
                                     tool_msg += f"\n\n{feedback_block}"
                                 if pivot_info:
@@ -2814,7 +2975,8 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             return report_state.executive_summary or forced_summary
 
                         # Build message for Red Teamer (tool result + optional reporter feedback)
-                        tool_msg = f"Tool '{tool_name}' result: {result_str}"
+                        truncated_result = _truncate_tool_output_for_llm(result_str)
+                        tool_msg = f"Tool '{tool_name}' result: {truncated_result}"
                         if feedback_block:
                             tool_msg += f"\n\n{feedback_block}"
                         if pivot_info:

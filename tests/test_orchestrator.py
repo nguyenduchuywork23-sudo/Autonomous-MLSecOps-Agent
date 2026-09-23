@@ -1,7 +1,10 @@
-"""Unit tests for Orchestrator v3.0 components.
+"""Unit tests for Orchestrator components.
 
 Tests:
 - JSON extraction and healing (sanitization, edge cases)
+- Qwen thinking tag cleaning and unclosed tag recovery
+- Reporter heuristic fallback extraction
+- Large tool output truncation for context optimization
 - Anti-loop enforcement
 - Context window management (sliding window summarization)
 - Config integration
@@ -26,6 +29,10 @@ from src.client.orchestrator import (
     _get_semantic_signature,
     _filter_hallucinated_findings,
     _cold_ingest_assessment_playbook,
+    _clean_thinking_tags,
+    _extract_reporter_fallback,
+    _truncate_tool_output_for_llm,
+    _RE_THINK_TAGS,
     AuditLogger,
 )
 from src.client.report_state import ReportState, Finding, ToolStep
@@ -390,6 +397,88 @@ class TestColdIngestAssessmentPlaybook:
         assert rs.rag_stored_patterns[0]["stored_id"] == "ap::killchain_playbook::CWE-89::test12345"
 
 
+
+class TestQwenThinkingTagCleaning:
+    def test_clean_closed_think_tags(self):
+        text = "<think>\nLet's evaluate the target port 80.\n</think>\n```json\n{\"action\": \"call_tool\", \"tool_name\": \"docker_whatweb\"}\n```"
+        cleaned = _clean_thinking_tags(text)
+        assert "<think>" not in cleaned
+        assert "</think>" not in cleaned
+        assert "docker_whatweb" in cleaned
+
+    def test_clean_unclosed_trailing_think_tags(self):
+        text = '{"action": "call_tool", "tool_name": "docker_whatweb"}\n<think>\nUnfinished thought that was cut off'
+        cleaned = _clean_thinking_tags(text)
+        assert "<think>" not in cleaned
+        assert "Unfinished thought" not in cleaned
+        assert "docker_whatweb" in cleaned
+
+    def test_clean_unclosed_all_think_tags_with_json(self):
+        # When output begins with <think> and never closes, but contains a JSON object
+        text = '<think>\nI should call docker_whatweb now.\n{"action": "call_tool", "tool_name": "docker_whatweb"}'
+        cleaned = _clean_thinking_tags(text)
+        assert "<think>" not in cleaned
+        assert "docker_whatweb" in cleaned
+        # JSON should be parseable
+        parsed = _extract_json(cleaned)
+        assert parsed["action"] == "call_tool"
+        assert parsed["tool_name"] == "docker_whatweb"
+
+    def test_clean_pure_text_no_tags(self):
+        text = '{"action": "final_answer", "text": "Hoàn tất đánh giá."}'
+        cleaned = _clean_thinking_tags(text)
+        assert cleaned == text
+
+
+class TestReporterFallbackExtraction:
+    def test_extract_reporter_fallback_on_malformed_json(self):
+        # Malformed JSON with raw unescaped quotes in description
+        malformed = """
+        {
+            "risk_score": 7.5,
+            "suggestion_for_redteam": "Tiếp tục quét cổng 443 và kiểm tra SSL",
+            "step_comment": "Phát hiện file cấu hình nhạy cảm",
+            "objective_assessment": "Đang tiến triển tốt",
+            "blocking_factor": "Chưa bypass được WAF",
+            "new_findings": [
+                {
+                    "title": "Lộ file config.php",
+                    "severity": "HIGH",
+                    "description": "Tìm thấy file "config.php" chứa database password",
+                    "cve_id": "CVE-2023-1234"
+                }
+            ]
+        }
+        """
+        # Strict json.loads will fail on raw unescaped quote
+        res = _extract_reporter_fallback(malformed)
+        assert res["risk_score"] == 7.5
+        assert "Tiếp tục quét cổng 443" in res["suggestion"]
+        assert "Phát hiện file cấu hình" in res["step_comment"]
+        assert res["objective_assessment"] == "Đang tiến triển tốt"
+        assert res["blocking_factor"] == "Chưa bypass được WAF"
+
+    def test_extract_reporter_fallback_empty_on_garbage(self):
+        assert _extract_reporter_fallback("") == {}
+        assert _extract_reporter_fallback("Just some completely random text without any keys") == {}
+
+
+class TestToolOutputTruncation:
+    def test_truncate_under_threshold(self):
+        short_output = "Nmap scan report for 192.168.1.1\nHost is up.\nPORT 80/tcp open http"
+        assert _truncate_tool_output_for_llm(short_output, max_chars=6000) == short_output
+
+    def test_truncate_over_threshold(self):
+        # 10,000 character output
+        long_output = "HEAD_MARKER: Scan started on port 80.\n" + ("A" * 9900) + "\nTAIL_MARKER: Scan completed with 5 open ports."
+        truncated = _truncate_tool_output_for_llm(long_output, max_chars=6000)
+        assert len(truncated) < len(long_output)
+        assert "HEAD_MARKER: Scan started on port 80." in truncated
+        assert "TAIL_MARKER: Scan completed with 5 open ports." in truncated
+        assert "Đã rút gọn" in truncated
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
 

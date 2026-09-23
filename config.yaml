@@ -12,6 +12,9 @@ llm:
   model: "huihui_ai/qwen3.5-abliterated:9b"
   temperature: 0.1
   num_gpu: 0  # 0 = Chạy an toàn trên CPU để tránh lỗi CUDA PTX JIT crash trên NVIDIA Driver 592.82/GPU 4GB
+  num_ctx: 16384                   # Cửa sổ ngữ cảnh cho Red Teamer (tránh tràn token khi tool output lớn)
+  num_predict: 8192                # Giới hạn token sinh tối đa mỗi bước
+  keep_alive: "15m"                # Duy trì mô hình trong RAM/VRAM tránh tráo đổi (swap) gây chậm real-time
 
 # --- Agent Orchestrator ---
 agent:
@@ -71,7 +74,7 @@ hitl:
     - docker_wpscan
     - docker_msf_search
 
-# --- Reporter Agent (SOC Analyst — Real-time Collaboration v4.0) ---
+# --- Reporter Agent (SOC Analyst — Real-time Collaboration) ---
 reporter:
   model: "huihui_ai/qwen3.5-abliterated:2B"           # Con 2B Abliterated nhẹ, không kiểm duyệt, chạy trên CPU/RAM
   temperature: 0.3               # Văn phong chuẩn xác, không bay bổng
@@ -79,6 +82,9 @@ reporter:
   enabled: true                  # false = tắt Reporter hoàn toàn
   realtime: true                 # true = quan sát real-time mỗi bước; false = chỉ chạy cuối
   realtime_timeout: 30           # Timeout cho mỗi lần gọi real-time (giây)
+  num_ctx: 8192                  # Cửa sổ ngữ cảnh cho Reporter (đủ cho summary + tool output)
+  num_predict: 2048              # Giới hạn token sinh tối đa cho Reporter
+  keep_alive: "15m"              # Giữ mô hình trong RAM/VRAM đồng thời với Red Teamer
   skip_tools:                    # Không gọi Reporter cho các tool nhẹ này
     - docker_resolve_dns
     - browse_webpage
