@@ -1,0 +1,121 @@
+# ============================================================
+# MLSecOps Agent v4.1 — Configuration
+# ============================================================
+# Override any value via environment variable with prefix MLSEC_
+# Example: MLSEC_MODEL=gemma2:9b  overrides  model below
+# ============================================================
+
+# --- LLM Configuration ---
+llm:
+  base_url: "http://localhost:11434/v1"
+  api_key: "ollama"
+  model: "huihui_ai/qwen3.5-abliterated:9b"
+  temperature: 0.1
+  num_gpu: 0  # 0 = Chạy an toàn trên CPU để tránh lỗi CUDA PTX JIT crash trên NVIDIA Driver 592.82/GPU 4GB
+
+# --- Agent Orchestrator ---
+agent:
+  max_iterations: 25               # Max ReAct loop iterations per session
+  context_window_size: 30           # Keep last N messages; older ones get summarized
+  retry_max: 2                      # Auto-retry on MCP/tool failure
+  retry_delay_seconds: 3            # Delay between retries
+  stagnation_warning_threshold: 3   # Consecutive steps without new findings before warning
+  stagnation_max_threshold: 5       # Consecutive steps without new findings before forced final_answer
+  relentless_pursuit: true          # Chế độ nỗ lực cực đoan - kiên quyết theo đuổi mục tiêu
+  compound_threat_correlation: true # Động cơ tương quan lỗ hổng phức hợp (8 chuỗi khai thác)
+  max_guard_challenges: 10          # Số lần tối đa chặn kết thúc sớm khi còn vector khả thi (Cực đoan)
+  stagnation_max_rescues: 5         # Số lần tối đa giải cứu bế tắc tự động nạp đòn đột phá (Cực đoan)
+
+# --- MCP Server ---
+mcp:
+  server_script: "src/servers/docker_arsenal.py"
+
+# --- Tool Timeouts (seconds) ---
+timeouts:
+  fast_scan: 120
+  deep_scan: 300
+  nuclei: 300
+  sqlmap: 300
+  crawler: 60
+  hydra: 600
+  metasploit: 180
+  whatweb: 60
+  nikto: 240
+  gobuster: 120
+  wpscan: 300
+  subfinder: 120
+  ffuf: 180
+  testssl: 300
+  sensitive_files: 60
+  cors: 60
+  xss: 120
+  httpx: 120
+  ssl_cert: 30
+  dns_security: 30
+  security_txt: 30
+  cookie_security: 30
+  http_headers: 30
+  api_docs: 60
+  subdomain_takeover: 60
+  waf_detect: 30
+
+# --- Human-in-the-Loop ---
+hitl:
+  enabled: true
+  destructive_tools:
+    - docker_sqlmap_scan
+    - docker_sqlmap_dump
+    - docker_bruteforce
+    - bruteforce_ssh
+    - bruteforce_http_form
+    - docker_wpscan
+    - docker_msf_search
+
+# --- Reporter Agent (SOC Analyst — Real-time Collaboration v4.0) ---
+reporter:
+  model: "huihui_ai/qwen3.5-abliterated:2B"           # Con 2B Abliterated nhẹ, không kiểm duyệt, chạy trên CPU/RAM
+  temperature: 0.3               # Văn phong chuẩn xác, không bay bổng
+  timeout_seconds: 120           # Timeout cho Final Polish pass (giây)
+  enabled: true                  # false = tắt Reporter hoàn toàn
+  realtime: true                 # true = quan sát real-time mỗi bước; false = chỉ chạy cuối
+  realtime_timeout: 30           # Timeout cho mỗi lần gọi real-time (giây)
+  skip_tools:                    # Không gọi Reporter cho các tool nhẹ này
+    - docker_resolve_dns
+    - browse_webpage
+
+# --- Reporting (Multi-Format: DOCX, Markdown, JSON — v4.1) ---
+reports:
+  output_dir: "reports"
+  generate_word: true
+  generate_markdown: true
+  generate_json: true
+  company_name: "Security Assessment Team"
+  classification: "CONFIDENTIAL"
+
+# --- Wordlists ---
+wordlists:
+  directory: "wordlists"
+  default_password: "rockyou.txt"
+  default_directory: "dirb_common.txt"
+
+# --- Vector Database & RAG Long-term Memory (Enterprise Self-Learning) ---
+vectordb:
+  enabled: true
+  path: "data/chromadb"
+  embedding_source: "ollama"        # "ollama" (nomic-embed-text) hoặc "onnx" (MiniLM fallback)
+  ollama_model: "nomic-embed-text"  # 768d, 8K context, ~137MB
+  top_k: 3                         # Số kịch bản tối đa trả về mỗi query
+  min_similarity: 0.65             # Ngưỡng cosine similarity tối thiểu
+  max_rag_tokens: 800              # Token budget cho RAG block
+  rerank:
+    enabled: true
+    model: "ms-marco-MiniLM-L-12-v2"  # FlashRank ONNX (~34MB)
+    weights:                          # Trọng số final score
+      cross_encoder: 0.5
+      heuristic: 0.3
+      vector_similarity: 0.2
+  consolidation:
+    auto_trigger_threshold: 1000    # Tự động consolidate khi > N records
+    similarity_threshold: 0.85     # Ngưỡng gộp nhóm
+    min_cluster_size: 5            # Ít nhất N bản ghi giống nhau mới gộp
+

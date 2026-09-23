@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.tmp
+*.bak
+
+# Environments
+.env
+venv/
+env/
+ENV/
+
+# Data outputs & Storage
+data/raw_outputs/*
+!data/raw_outputs/.gitkeep
+data/chromadb/
+models_cache/
+
+# Wordlists (large binary files — regenerate with setup_wordlists.py)
+wordlists/
+rockyou.txt.gz
+
+# Reports & Personal Documents (generated at runtime / private)
+reports/
+*.docx
+*.pdf
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
