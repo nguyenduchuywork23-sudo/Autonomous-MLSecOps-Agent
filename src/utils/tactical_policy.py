@@ -264,6 +264,7 @@ class TacticalRewardEngine:
         new_endpoints_discovered: int = 0,
         tool_status: str = "SUCCESS",
         is_duplicate_call: bool = False,
+        semantic_boost: float = 0.0,
     ) -> float:
         """Calculate the scalar reward signal R."""
         reward = 0.0
@@ -304,7 +305,44 @@ class TacticalRewardEngine:
             else:
                 reward -= 1.0
 
+        # Qualitative semantic feedback from Qwen Reporter
+        if semantic_boost:
+            reward += float(semantic_boost)
+
         return round(reward, 2)
+
+
+def extract_semantic_reward(reporter_result: dict[str, Any] | None, distilled_summary: str = "") -> float:
+    """Extract qualitative semantic reward adjustment from Qwen Reporter's assessment."""
+    if not reporter_result and not distilled_summary:
+        return 0.0
+
+    boost = 0.0
+    text_corpus = ""
+    if reporter_result:
+        text_corpus += " " + str(reporter_result.get("objective_assessment", ""))
+        text_corpus += " " + str(reporter_result.get("step_comment", ""))
+        text_corpus += " " + str(reporter_result.get("suggestion", ""))
+    if distilled_summary:
+        text_corpus += " " + str(distilled_summary)
+
+    text_lower = text_corpus.lower()
+
+    # Positive qualitative indicators identified by LLM
+    if any(k in text_lower for k in ("đột phá", "chiếm quyền", "xác thực thành công", "phát hiện tham số nhạy cảm", "lộ mật khẩu", "database dumped")):
+        boost += 5.0
+    elif any(k in text_lower for k in ("tiềm năng cao", "bề mặt quan trọng", "lỗ hổng nghiêm trọng", "phát hiện cve")):
+        boost += 3.0
+    elif any(k in text_lower for k in ("mở rộng thành công", "tìm thấy endpoint", "tiến triển tích cực")):
+        boost += 1.5
+
+    # Negative qualitative indicators identified by LLM
+    if any(k in text_lower for k in ("bế tắc", "không có tiến triển", "lặp lại vô nghĩa", "không thu được gì")):
+        boost -= 1.5
+    elif any(k in text_lower for k in ("bị chặn", "waf block", "tường lửa từ chối")):
+        boost -= 1.0
+
+    return round(boost, 2)
 
 
 # ---------------------------------------------------------------------------

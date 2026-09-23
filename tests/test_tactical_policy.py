@@ -15,6 +15,7 @@ from src.utils.tactical_policy import (
     TacticalRecommendation,
     BASE_TOOL_PRIORS,
     CANONICAL_KILL_CHAINS,
+    extract_semantic_reward,
 )
 
 
@@ -158,6 +159,20 @@ class TestTacticalRewardEngine:
             tool_status="SUCCESS",
         )
         assert r == 0.5
+
+    def test_semantic_boost_integration(self):
+        """Qualitative boost from Qwen Reporter should increase scalar reward."""
+        r_base = self.engine.compute_reward("tool", 0, 0, tool_status="SUCCESS")
+        r_boosted = self.engine.compute_reward("tool", 0, 0, tool_status="SUCCESS", semantic_boost=5.0)
+        assert r_boosted == r_base + 5.0
+
+    def test_extract_semantic_reward_positive_and_negative(self):
+        """Should detect positive breakthroughs and negative dead ends from LLM text."""
+        pos_rep = {"objective_assessment": "Bước đột phá: Khai thác thành công database dumped"}
+        assert extract_semantic_reward(pos_rep) >= 5.0
+
+        neg_rep = {"objective_assessment": "Bế tắc, không có tiến triển, công cụ bị chặn hoàn toàn"}
+        assert extract_semantic_reward(neg_rep) < 0.0
 
 
 class TestTacticalPolicyManager:

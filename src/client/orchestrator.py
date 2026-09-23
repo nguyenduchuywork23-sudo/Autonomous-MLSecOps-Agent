@@ -37,13 +37,13 @@ from mcp import StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.client.session import ClientSession
 
-# Import centralized config and v4.0 modules
+# Import centralized config and modules
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 import logging
 from src.utils.config import load_config, get as cfg_get
 from src.client.report_state import ReportState, Finding, ToolStep
 from src.utils.report_generator import generate_docx_report
-from src.utils.tactical_policy import TacticalPolicyManager, AttackStateExtractor
+from src.utils.tactical_policy import TacticalPolicyManager, AttackStateExtractor, extract_semantic_reward
 
 console = Console()
 logger = logging.getLogger("orchestrator")
@@ -2014,6 +2014,17 @@ async def run_agent(prompt: str, server_script: str | None = None,
                 except Exception as e:
                     logger.debug("RAG prompt injection query failed: %s", e)
 
+            # Symbiotic Neuro-Symbolic Command directive
+            synergy_directive = (
+                "\n\n# CHỈ ĐẠO CHỈ HUY HIỆP ĐỒNG (SYMBIOTIC NEURO-SYMBOLIC COMMAND):\n"
+                "Bạn (Qwen Red Teamer) là vị TƯỚNG TỐI CAO của chiến dịch. Hệ thống trang bị cho bạn 2 cố vấn đắc lực:\n"
+                "1. CỐ VẤN TOÁN HỌC (Tactical Policy Engine - Q-learning & Bandit): Tính toán xác suất thành công từ hàng trăm trận đánh trước để gợi ý công cụ và chuỗi Kill-Chain tối ưu.\n"
+                "2. CỐ VẤN GIÁM SÁT (SOC Analyst Reporter): Phân tích phản hồi mục tiêu và chất lượng phát hiện theo thời gian thực.\n"
+                "TRÁCH NHIỆM VƯỢT TRỘI CỦA BẠN (QWEN):\n"
+                "- Nắm quyền quyết định chiến lược: Hãy tận dụng sức mạnh suy luận ngữ nghĩa của bạn để điều chỉnh tham số 'arguments' một cách tinh vi nhất (URL, endpoints, injection payloads, wordlists).\n"
+                "- Khi cố vấn toán học đưa ra gợi ý, hãy kết hợp với trí tuệ ngữ cảnh của bạn để ra đòn quyết định. Nếu bạn phát hiện một sơ hở tinh tế mà công thức toán học chưa thấy, hãy chủ động khai thác ngay!\n"
+            )
+
             system_prompt = (
                 "/nothink\n"
                 "You are an autonomous red team agent. Compromise the target.\n\n"
@@ -2060,7 +2071,8 @@ async def run_agent(prompt: str, server_script: str | None = None,
                 "must be 100% standard, parseable JSON.\n\n"
                 + (f"\n{rag_experience_block}\n" if rag_experience_block else "")
                 + mode_instruction
-                + soc_notice +
+                + soc_notice
+                + synergy_directive +
                 "\n# OUTPUT FORMAT (STRICT JSON):\n"
                 "You must output ONLY a single ```json``` code block. NO text before or after.\n"
                 "Keep 'thought' EXTREMELY SHORT — MAX 30 words. Longer thoughts cause FATAL errors.\n\n"
@@ -2204,11 +2216,15 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                 combo_str = f" [Combo: {r.combo_chain[0]} ➔ {r.combo_chain[1]}]" if len(r.combo_chain) > 1 else ""
                                 rec_lines.append(f"- `{r.tool_name}` (Q={r.q_value:.1f}, Visits={r.visits}){combo_str} → {r.rationale}")
                             rec_block = (
-                                f"[🎯 GỢI Ý CHIẾN THUẬT (TACTICAL POLICY ENGINE - Q-LEARNING)]\n"
+                                f"[⚡ CHẾ ĐỘ HIỆP ĐỒNG CHIẾN THUẬT: QWEN CHỈ HUY x CỐ VẤN TOÁN HỌC]\n"
                                 f"Trạng thái mục tiêu: `{current_state_key}`\n"
-                                f"Top hành động được tối ưu hóa toán học (UCB1 & Kill-Chain) dựa trên dữ liệu tích lũy:\n"
+                                f"Cố vấn Toán học (Policy Engine & Markov Kill-Chain) đề xuất các vector tối ưu:\n"
                                 + "\n".join(rec_lines)
-                                + "\n(Hãy cân nhắc ưu tiên các công cụ này nếu phù hợp với ngữ cảnh mục tiêu)."
+                                + "\n"
+                                f"🛡️ QUYỀN HẠN CỦA RED TEAMER (QWEN):\n"
+                                f"- Bạn là CHỈ HUY TỐI CAO: Cân nhắc gợi ý toán học trên kết hợp với suy luận ngữ nghĩa của bạn.\n"
+                                f"- Tự do tùy biến tham số ('arguments') sâu sắc nhất (URL cụ thể, payload, wordlist) để công cụ đạt hiệu quả tối đa!\n"
+                                f"- Nếu bạn phát hiện một dấu hiệu ngữ nghĩa đặc biệt vượt ngoài gợi ý trên, hãy tự tin triển khai công cụ bạn đánh giá là đúng đắn nhất."
                             )
                             if not any(f"Trạng thái mục tiêu: `{current_state_key}`" in str(m.get("content", "")) for m in messages[-2:]):
                                 messages.append({
@@ -2573,6 +2589,12 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                 new_ports = max(0, len(report_state.attack_surface.open_ports) - open_ports_before)
                                 new_endpoints = max(0, len(report_state.attack_surface.parameterized_endpoints) - endpoints_before)
 
+                                # Extract qualitative semantic reward from Qwen Reporter's assessment
+                                semantic_rew = extract_semantic_reward(
+                                    reporter_result=reporter_result if reporter_realtime else None,
+                                    distilled_summary=distilled_intel.get("summary", ""),
+                                )
+
                                 reward = tactical_policy.reward_engine.compute_reward(
                                     tool_name=tool_name,
                                     pre_findings_count=findings_count_before,
@@ -2582,6 +2604,7 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                     new_endpoints_discovered=new_endpoints,
                                     tool_status=tool_status,
                                     is_duplicate_call=is_duplicate_call,
+                                    semantic_boost=semantic_rew,
                                 )
                                 post_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
                                 prev_tool = tools_called[-2] if len(tools_called) >= 2 else None
