@@ -2,9 +2,10 @@
 
 Provides mathematical decision-making and continual learning for the autonomous agent:
 1. AttackStateExtractor: Maps ReportState and AttackSurfaceGraph into discrete state representations.
-2. TacticalRewardEngine: Computes objective scalar rewards for tool execution outcomes.
-3. TacticalPolicyManager: Q-Learning & Contextual Multi-Armed Bandit with UCB1 exploration,
-   persisting learned policies to disk (continual learning without full reliance on LLM).
+2. StateSimilarityMatcher: Computes feature distance for cross-state transfer learning.
+3. TacticalRewardEngine: Computes objective scalar rewards for tool execution outcomes.
+4. TacticalPolicyManager: Q-Learning, Contextual Bandit (UCB1), Markov Action Chaining,
+   dead-end pruning, and persistent learned policies.
 """
 
 from __future__ import annotations
@@ -92,9 +93,29 @@ BASE_TOOL_PRIORS: dict[str, float] = {
     "browse_webpage": 2.5,
 }
 
+# Canonical Sequential Kill-Chain Pairs (Domain Prior Momentum)
+CANONICAL_KILL_CHAINS: dict[tuple[str, str], float] = {
+    ("docker_crawl_web", "docker_sqlmap_scan"): 3.0,
+    ("docker_crawl_web", "docker_xss_scan"): 2.5,
+    ("docker_crawl_web", "bruteforce_http_form"): 2.8,
+    ("docker_crawl_web", "docker_sensitive_files_scan"): 2.2,
+    ("docker_scan_ports_fast", "docker_scan_ports_deep"): 2.5,
+    ("docker_scan_ports_fast", "bruteforce_ssh"): 2.5,
+    ("docker_scan_ports_fast", "docker_crawl_web"): 2.5,
+    ("docker_whatweb", "docker_wpscan"): 3.5,
+    ("docker_whatweb", "docker_nikto_scan"): 2.0,
+    ("docker_subfinder", "docker_httpx_probe"): 3.0,
+    ("docker_httpx_probe", "docker_subdomain_takeover_audit"): 2.8,
+    ("docker_sqlmap_scan", "docker_sqlmap_dump"): 4.0,
+    ("docker_nuclei_scan", "docker_msf_search"): 3.2,
+    ("docker_testssl", "docker_ssl_cert_audit"): 2.0,
+    ("docker_dirb_scan", "docker_sensitive_files_scan"): 2.0,
+    ("docker_ffuf", "docker_api_docs_audit"): 2.2,
+}
+
 
 # ---------------------------------------------------------------------------
-# 1. State Feature Extraction
+# 1. State Feature Extraction & Similarity
 # ---------------------------------------------------------------------------
 
 class AttackStateExtractor:
@@ -173,6 +194,51 @@ class AttackStateExtractor:
         return f"phase:{phase}|web:{web_mode}|params:{has_params}|forms:{has_login}|ssh:{has_ssh}|cms:{cms}|waf:{waf}"
 
 
+class StateSimilarityMatcher:
+    """Computes weighted similarity across discrete attack states for Transfer Learning."""
+
+    FEATURE_WEIGHTS = {
+        "phase": 0.25,
+        "params": 0.20,
+        "cms": 0.15,
+        "forms": 0.15,
+        "web": 0.10,
+        "ssh": 0.10,
+        "waf": 0.05,
+    }
+
+    @classmethod
+    def parse_features(cls, state_key: str) -> dict[str, str]:
+        """Parse key-value pairs from canonical state string."""
+        feats = {}
+        for token in (state_key or "").split("|"):
+            if ":" in token:
+                k, v = token.split(":", 1)
+                feats[k.strip()] = v.strip()
+        return feats
+
+    @classmethod
+    def compute_similarity(cls, state_a: str, state_b: str) -> float:
+        """Compute weighted feature similarity in [0.0, 1.0]."""
+        if state_a == state_b:
+            return 1.0
+        fa = cls.parse_features(state_a)
+        fb = cls.parse_features(state_b)
+        if not fa or not fb:
+            return 0.0
+
+        score = 0.0
+        total_weight = 0.0
+        for dim, weight in cls.FEATURE_WEIGHTS.items():
+            total_weight += weight
+            val_a = fa.get(dim)
+            val_b = fb.get(dim)
+            if val_a is not None and val_b is not None and val_a == val_b:
+                score += weight
+
+        return round(score / max(total_weight, 0.001), 3)
+
+
 # ---------------------------------------------------------------------------
 # 2. Objective Reward Engine
 # ---------------------------------------------------------------------------
@@ -180,7 +246,6 @@ class AttackStateExtractor:
 class TacticalRewardEngine:
     """Computes mathematical scalar reward for an action given environmental feedback."""
 
-    # Severity values
     SEVERITY_WEIGHTS = {
         "CRITICAL": 25.0,
         "HIGH": 15.0,
@@ -243,7 +308,7 @@ class TacticalRewardEngine:
 
 
 # ---------------------------------------------------------------------------
-# 3. Tactical Policy Manager (Q-Learning + Contextual Bandit)
+# 3. Tactical Policy Manager (Q-Learning + Bandit + Markov Chain + Transfer)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -254,6 +319,9 @@ class TacticalRecommendation:
     confidence: float
     visits: int
     rationale: str
+    combo_chain: list[str] = field(default_factory=list)
+    chain_affinity: float = 0.0
+    source_type: str = "DIRECT"  # DIRECT, TRANSFERRED, PRIOR, DEAD_END
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -262,11 +330,14 @@ class TacticalRecommendation:
             "confidence": round(self.confidence, 3),
             "visits": self.visits,
             "rationale": self.rationale,
+            "combo_chain": self.combo_chain,
+            "chain_affinity": round(self.chain_affinity, 2),
+            "source_type": self.source_type,
         }
 
 
 class TacticalPolicyManager:
-    """Manages Q-values, UCB1 action exploration, and continual learning persistence."""
+    """Manages Q-values, UCB1 action exploration, Markov Kill-Chains, and continual learning."""
 
     def __init__(
         self,
@@ -285,9 +356,12 @@ class TacticalPolicyManager:
         self._lock = threading.RLock()
         self.q_table: dict[str, dict[str, float]] = {}
         self.visit_counts: dict[str, dict[str, int]] = {}
+        self.transition_counts: dict[str, dict[str, int]] = {}
+        self.transition_rewards: dict[str, dict[str, float]] = {}
         self.total_updates: int = 0
 
         self.reward_engine = TacticalRewardEngine()
+        self.similarity_matcher = StateSimilarityMatcher()
         self._load_policy()
 
     def _load_policy(self) -> None:
@@ -301,6 +375,8 @@ class TacticalPolicyManager:
                     data = json.load(f)
                     self.q_table = data.get("q_table", {})
                     self.visit_counts = data.get("visit_counts", {})
+                    self.transition_counts = data.get("transition_counts", {})
+                    self.transition_rewards = data.get("transition_rewards", {})
                     self.total_updates = int(data.get("total_updates", 0))
                     logger.info(
                         "Loaded tactical policy from %s (%d states, %d updates)",
@@ -322,11 +398,13 @@ class TacticalPolicyManager:
                 os.makedirs(parent_dir, exist_ok=True)
                 tmp_file = f"{self.policy_file}.tmp"
                 payload = {
-                    "version": "1.0",
+                    "version": "1.1",
                     "total_updates": self.total_updates,
                     "state_count": len(self.q_table),
                     "q_table": self.q_table,
                     "visit_counts": self.visit_counts,
+                    "transition_counts": self.transition_counts,
+                    "transition_rewards": self.transition_rewards,
                 }
                 with open(tmp_file, "w", encoding="utf-8") as f:
                     json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -335,18 +413,110 @@ class TacticalPolicyManager:
             except Exception as e:
                 logger.warning("Failed to save tactical policy to %s: %s", self.policy_file, e)
 
+    def _transfer_learning_q(self, state_key: str, tool_name: str) -> tuple[float, float, str] | None:
+        """Transfer learned Q-value from similar states if direct visits are 0."""
+        with self._lock:
+            matches: list[tuple[float, float, str]] = []  # (sim, q_val, state)
+            for s_other, t_map in self.q_table.items():
+                if s_other != state_key and tool_name in t_map:
+                    sim = self.similarity_matcher.compute_similarity(state_key, s_other)
+                    if sim >= 0.70:
+                        matches.append((sim, t_map[tool_name], s_other))
+
+            if not matches:
+                return None
+
+            total_sim = sum(m[0] for m in matches)
+            weighted_q = sum(m[0] * m[1] for m in matches) / total_sim
+            best_match = max(matches, key=lambda x: x[0])
+            return (round(weighted_q, 3), round(best_match[0], 2), best_match[2])
+
     def get_q_value(self, state_key: str, tool_name: str) -> float:
-        """Get current Q(s, a) with fallback to domain priors."""
+        """Get current Q(s, a) with Transfer Learning fallback and domain priors."""
         with self._lock:
             state_q = self.q_table.get(state_key, {})
             if tool_name in state_q:
                 return state_q[tool_name]
+
+            # Cross-State Transfer Learning
+            transfer = self._transfer_learning_q(state_key, tool_name)
+            if transfer is not None:
+                return transfer[0]
+
             return BASE_TOOL_PRIORS.get(tool_name, 2.0)
+
+    def get_q_value_meta(self, state_key: str, tool_name: str) -> tuple[float, str]:
+        """Get Q-value along with source metadata (DIRECT, TRANSFERRED, or PRIOR)."""
+        with self._lock:
+            state_q = self.q_table.get(state_key, {})
+            if tool_name in state_q:
+                return (state_q[tool_name], "DIRECT")
+
+            transfer = self._transfer_learning_q(state_key, tool_name)
+            if transfer is not None:
+                return (transfer[0], f"TRANSFERRED (Sim={transfer[1]:.0%})")
+
+            return (BASE_TOOL_PRIORS.get(tool_name, 2.0), "PRIOR")
 
     def get_visit_count(self, state_key: str, tool_name: str) -> int:
         """Get number of times action a was chosen in state s."""
         with self._lock:
             return self.visit_counts.get(state_key, {}).get(tool_name, 0)
+
+    def get_transition_score(self, last_action: str | None, candidate_action: str) -> float:
+        """Compute sequential kill-chain affinity bonus between last_action and candidate_action."""
+        if not last_action:
+            return 0.0
+
+        with self._lock:
+            prior_affinity = CANONICAL_KILL_CHAINS.get((last_action, candidate_action), 0.0)
+
+            # Empirical transition reinforcement
+            empirical_bonus = 0.0
+            if last_action in self.transition_counts and candidate_action in self.transition_counts[last_action]:
+                count = self.transition_counts[last_action][candidate_action]
+                total_rew = self.transition_rewards.get(last_action, {}).get(candidate_action, 0.0)
+                avg_rew = total_rew / max(count, 1)
+                empirical_bonus = min(3.5, max(-2.0, avg_rew * 0.15))
+
+            return round(prior_affinity + empirical_bonus, 2)
+
+    def record_transition(self, from_action: str, to_action: str, reward: float) -> None:
+        """Record empirical action-to-action transition and outcome."""
+        if not from_action or not to_action:
+            return
+
+        with self._lock:
+            if from_action not in self.transition_counts:
+                self.transition_counts[from_action] = {}
+            if from_action not in self.transition_rewards:
+                self.transition_rewards[from_action] = {}
+
+            self.transition_counts[from_action][to_action] = (
+                self.transition_counts[from_action].get(to_action, 0) + 1
+            )
+            self.transition_rewards[from_action][to_action] = round(
+                self.transition_rewards[from_action].get(to_action, 0.0) + float(reward), 2
+            )
+
+    def predict_combo_chain(self, action: str) -> list[str]:
+        """Predict the most effective 2-step kill-chain continuation from this action."""
+        with self._lock:
+            best_followup = None
+            best_score = 0.0
+
+            candidates = list(BASE_TOOL_PRIORS.keys())
+            for follow in candidates:
+                if follow == action:
+                    continue
+                score = self.get_transition_score(action, follow)
+                if score > best_score:
+                    best_score = score
+                    best_followup = follow
+
+            if best_followup and best_score >= 2.0:
+                return [action, best_followup]
+            return [action]
 
     def recommend_actions(
         self,
@@ -354,8 +524,9 @@ class TacticalPolicyManager:
         top_k: int = 3,
         allowed_tools: list[str] | set[str] | None = None,
         exclude_tools: set[str] | None = None,
+        last_action: str | None = None,
     ) -> list[TacticalRecommendation]:
-        """Rank and recommend actions using UCB1 exploration and Q-values."""
+        """Rank and recommend actions using Q-values, UCB1, Markov Chaining, and Dead-End Pruning."""
         if not self.enabled:
             return []
 
@@ -369,19 +540,34 @@ class TacticalPolicyManager:
 
             # Compute total visits for state s
             state_visits = sum(self.visit_counts.get(state_key, {}).values()) + 1
-            scores: list[tuple[str, float, float, int, str]] = []
+            scores: list[tuple[str, float, float, int, str, list[str], float, str]] = []
 
             for tool in candidate_tools:
-                q = self.get_q_value(state_key, tool)
+                q, src_type = self.get_q_value_meta(state_key, tool)
                 n = self.get_visit_count(state_key, tool)
+                chain_bonus = self.get_transition_score(last_action, tool)
 
-                # UCB1 exploration score
-                ucb_bonus = self.c_ucb * math.sqrt(math.log(state_visits + 1) / (n + 0.05))
-                total_score = q + ucb_bonus
+                # Dead-End Vector Pruning:
+                # If an action was repeatedly attempted in this exact state and failed (Q <= 0, n >= 2),
+                # heavily penalize its exploration bonus so fresh or fruitful vectors are chosen.
+                is_dead_end = (n >= 2 and q <= 0.0)
+                if is_dead_end:
+                    ucb_bonus = -10.0
+                else:
+                    ucb_bonus = self.c_ucb * math.sqrt(math.log(state_visits + 1) / (n + 0.05))
 
-                # Build intuitive technical rationale
+                total_score = q + ucb_bonus + chain_bonus
+                combo = self.predict_combo_chain(tool)
+
+                # Technical rationale generation
                 cat = TOOL_CATEGORIES.get(tool, "SECURITY")
-                if "params:1" in state_key and tool in ("docker_sqlmap_scan", "docker_xss_scan"):
+                if is_dead_end:
+                    rationale = f"[{cat} - NGÕ CỤT] Đã thử nghiệm {n} lần không hiệu quả (Q={q:.1f}); triệt tiêu đề xuất"
+                    src_type = "DEAD_END"
+                elif chain_bonus >= 2.0 and last_action:
+                    combo_str = f" ➔ '{combo[1]}'" if len(combo) > 1 else ""
+                    rationale = f"[{cat}] Đòn tiếp nối Kill-Chain sau '{last_action}' (Affinity: +{chain_bonus:.1f}){combo_str}"
+                elif "params:1" in state_key and tool in ("docker_sqlmap_scan", "docker_xss_scan"):
                     rationale = f"[{cat}] Mục tiêu có tham số URL; lịch sử thực nghiệm đánh giá hiệu quả cao"
                 elif "forms:1" in state_key and tool == "bruteforce_http_form":
                     rationale = f"[{cat}] Đã nhận diện form đăng nhập; ưu tiên kiểm tra xác thực"
@@ -389,6 +575,8 @@ class TacticalPolicyManager:
                     rationale = f"[{cat}] Hệ quản trị WordPress phát hiện; kích hoạt công cụ chuyên biệt"
                 elif "ssh:1" in state_key and tool == "bruteforce_ssh":
                     rationale = f"[{cat}] Cổng SSH 22 mở; kiểm tra bảo mật cấu hình đăng nhập"
+                elif src_type.startswith("TRANSFERRED"):
+                    rationale = f"[{cat}] Kế thừa tri thức từ trạng thái tương tự (Q={q:.1f}, {src_type})"
                 elif n > 0 and q >= 5.0:
                     rationale = f"[{cat}] Tỷ lệ thành công cao qua {n} lần quét tương tự (Q={q:.1f})"
                 elif n == 0:
@@ -396,9 +584,9 @@ class TacticalPolicyManager:
                 else:
                     rationale = f"[{cat}] Chiến thuật phù hợp với giai đoạn hiện tại (Điểm: {total_score:.1f})"
 
-                scores.append((tool, total_score, q, n, rationale))
+                scores.append((tool, total_score, q, n, rationale, combo, chain_bonus, src_type))
 
-            # Sort descending by total UCB1 score
+            # Sort descending by total score
             scores.sort(key=lambda x: x[1], reverse=True)
 
             recs = [
@@ -408,8 +596,11 @@ class TacticalPolicyManager:
                     confidence=min(1.0, max(0.1, q / 20.0)),
                     visits=n,
                     rationale=r,
+                    combo_chain=cmb,
+                    chain_affinity=c_bon,
+                    source_type=s_type,
                 )
-                for t, total_s, q, n, r in scores[:top_k]
+                for t, total_s, q, n, r, cmb, c_bon, s_type in scores[:top_k]
             ]
             return recs
 
@@ -419,12 +610,18 @@ class TacticalPolicyManager:
         action: str,
         reward: float,
         next_state_key: str | None = None,
+        previous_action: str | None = None,
     ) -> float:
-        """Update Q-table via temporal-difference learning Q(s, a)."""
+        """Update Q-table via temporal-difference learning Q(s, a) and record transition."""
         if not self.enabled or not state_key or not action:
             return 0.0
 
         with self._lock:
+            # 1. Update sequential transition matrix
+            if previous_action:
+                self.record_transition(previous_action, action, reward)
+
+            # 2. Update Q-table
             if state_key not in self.q_table:
                 self.q_table[state_key] = {}
             if state_key not in self.visit_counts:

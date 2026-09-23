@@ -5,7 +5,7 @@ that accumulate during the real-time dual-agent collaboration.
 
 Used by:
 - Reporter Agent: updates findings and suggestions after each tool result
-- DOCX Generator: reads the final state to produce the enterprise report
+- DOCX Generator: reads the final state to produce the report
 - Orchestrator: reads suggestions to inject into Red Teamer's context
 """
 

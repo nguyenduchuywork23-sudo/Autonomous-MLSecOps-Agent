@@ -9,10 +9,12 @@ import pytest
 from src.client.report_state import ReportState, Finding
 from src.utils.tactical_policy import (
     AttackStateExtractor,
+    StateSimilarityMatcher,
     TacticalRewardEngine,
     TacticalPolicyManager,
     TacticalRecommendation,
     BASE_TOOL_PRIORS,
+    CANONICAL_KILL_CHAINS,
 )
 
 
@@ -67,6 +69,26 @@ class TestAttackStateExtractor:
         ))
         key = AttackStateExtractor.extract_state_key(state, ["docker_sqlmap_scan"])
         assert "phase:exploit" in key
+
+
+class TestStateSimilarityMatcher:
+    """Tests for StateSimilarityMatcher used in Transfer Learning."""
+
+    def test_exact_match_similarity_is_one(self):
+        s = "phase:recon|web:https|params:1|forms:0|ssh:0|cms:none|waf:0"
+        assert StateSimilarityMatcher.compute_similarity(s, s) == 1.0
+
+    def test_partial_similarity_waf_variation(self):
+        s1 = "phase:exploit|web:https|params:1|forms:0|ssh:0|cms:none|waf:0"
+        s2 = "phase:exploit|web:https|params:1|forms:0|ssh:0|cms:none|waf:1"
+        sim = StateSimilarityMatcher.compute_similarity(s1, s2)
+        assert sim >= 0.90
+
+    def test_dissimilar_states_low_similarity(self):
+        s1 = "phase:recon|web:none|params:0|forms:0|ssh:0|cms:none|waf:0"
+        s2 = "phase:exploit|web:https|params:1|forms:1|ssh:1|cms:wp|waf:1"
+        sim = StateSimilarityMatcher.compute_similarity(s1, s2)
+        assert sim < 0.30
 
 
 class TestTacticalRewardEngine:
@@ -139,7 +161,7 @@ class TestTacticalRewardEngine:
 
 
 class TestTacticalPolicyManager:
-    """Tests for Q-learning updates, UCB1 action ranking, and persistence."""
+    """Tests for Q-learning updates, UCB1 action ranking, Markov Chaining, and Transfer Learning."""
 
     def test_initial_q_priors(self):
         """Manager should return domain priors for unseen states."""
@@ -178,29 +200,78 @@ class TestTacticalPolicyManager:
         assert mgr.get_visit_count(s, a) == 2
         assert mgr.total_updates == 2
 
+    def test_cross_state_transfer_learning(self):
+        """Knowledge from similar past state should transfer to unseen state."""
+        mgr = TacticalPolicyManager(policy_file="", learning_rate=0.3, discount_factor=0.9, enabled=True)
+        s_known = "phase:exploit|web:https|params:1|forms:0|ssh:0|cms:none|waf:0"
+        s_unseen = "phase:exploit|web:https|params:1|forms:0|ssh:0|cms:none|waf:1"  # 95% similarity
+
+        # Train on s_known
+        mgr.record_outcome(s_known, "docker_sqlmap_scan", reward=30.0)
+        q_known = mgr.get_q_value(s_known, "docker_sqlmap_scan")
+        assert q_known > BASE_TOOL_PRIORS.get("docker_sqlmap_scan")
+
+        # Query unseen state
+        q_unseen, src_meta = mgr.get_q_value_meta(s_unseen, "docker_sqlmap_scan")
+        assert "TRANSFERRED" in src_meta
+        assert q_unseen > BASE_TOOL_PRIORS.get("docker_sqlmap_scan")
+
+    def test_kill_chain_transition_and_momentum(self):
+        """Sequential transitions should yield momentum bonus and combo chains."""
+        mgr = TacticalPolicyManager(policy_file="", enabled=True)
+        prior_score = mgr.get_transition_score("docker_crawl_web", "docker_sqlmap_scan")
+        assert prior_score >= 3.0
+
+        # Record empirical successful transitions
+        mgr.record_transition("docker_crawl_web", "docker_sqlmap_scan", reward=20.0)
+        mgr.record_transition("docker_crawl_web", "docker_sqlmap_scan", reward=20.0)
+        updated_score = mgr.get_transition_score("docker_crawl_web", "docker_sqlmap_scan")
+        assert updated_score > prior_score
+
+        # Predict combo chain
+        combo = mgr.predict_combo_chain("docker_sqlmap_scan")
+        assert combo == ["docker_sqlmap_scan", "docker_sqlmap_dump"]
+
+    def test_dead_end_vector_pruning(self):
+        """Repeated failures in a state should be pruned from recommendations."""
+        mgr = TacticalPolicyManager(policy_file="", learning_rate=0.5, enabled=True)
+        s = "phase:exploit|web:https|params:0|forms:0|ssh:0|cms:none|waf:1"
+        tool = "docker_sqlmap_scan"
+
+        # Drive Q below 0.0 with 2 consecutive failures
+        mgr.record_outcome(s, tool, reward=-5.0)
+        mgr.record_outcome(s, tool, reward=-5.0)
+        assert mgr.get_q_value(s, tool) <= 0.0
+        assert mgr.get_visit_count(s, tool) >= 2
+
+        # Check recommendations
+        recs = mgr.recommend_actions(s, top_k=10)
+        tool_rec = next((r for r in recs if r.tool_name == tool), None)
+        if tool_rec:
+            assert tool_rec.source_type == "DEAD_END"
+            assert "NGÕ CỤT" in tool_rec.rationale
+
     def test_atomic_persistence_save_and_load(self):
-        """Policy should save atomically to JSON and be successfully restored."""
+        """Policy should save atomically to JSON and restore transitions & Q-values."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             policy_file = os.path.join(tmp_dir, "test_policy.json")
             mgr = TacticalPolicyManager(policy_file=policy_file, enabled=True)
 
             s = "phase:exploit|web:https|params:1|forms:0|ssh:0|cms:none|waf:0"
-            mgr.record_outcome(s, "docker_sqlmap_scan", 25.0)
-            mgr.record_outcome(s, "docker_xss_scan", 15.0)
+            mgr.record_outcome(s, "docker_sqlmap_scan", 25.0, previous_action="docker_crawl_web")
             mgr.save_policy()
 
             assert os.path.exists(policy_file)
             with open(policy_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                assert data["total_updates"] == 2
-                assert s in data["q_table"]
-                assert "docker_sqlmap_scan" in data["q_table"][s]
+                assert data["version"] == "1.1"
+                assert "transition_counts" in data
+                assert "docker_crawl_web" in data["transition_counts"]
 
-            # Create new manager pointing to same file -> verify restoration
+            # Reload
             mgr_reloaded = TacticalPolicyManager(policy_file=policy_file, enabled=True)
-            assert mgr_reloaded.total_updates == 2
-            assert mgr_reloaded.get_visit_count(s, "docker_sqlmap_scan") == 1
-            assert mgr_reloaded.get_q_value(s, "docker_sqlmap_scan") == mgr.get_q_value(s, "docker_sqlmap_scan")
+            assert mgr_reloaded.total_updates == 1
+            assert mgr_reloaded.transition_counts.get("docker_crawl_web", {}).get("docker_sqlmap_scan") == 1
 
     def test_thread_safety_concurrent_updates(self):
         """Concurrent updates from multiple threads should not corrupt Q-table."""
@@ -209,7 +280,7 @@ class TestTacticalPolicyManager:
 
         def worker(tool_name: str, n_times: int):
             for _ in range(n_times):
-                mgr.record_outcome(s, tool_name, 5.0)
+                mgr.record_outcome(s, tool_name, 5.0, previous_action="tool_prev")
 
         threads = [
             threading.Thread(target=worker, args=(f"tool_{i}", 50))

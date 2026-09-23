@@ -2191,20 +2191,22 @@ async def run_agent(prompt: str, server_script: str | None = None,
                 if tactical_policy:
                     try:
                         current_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
+                        last_act = tools_called[-1] if tools_called else None
                         recs = tactical_policy.recommend_actions(
                             state_key=current_state_key,
                             top_k=3,
                             exclude_tools=set(tools_called) if len(tools_called) < 25 else None,
+                            last_action=last_act,
                         )
                         if recs:
-                            rec_lines = [
-                                f"- `{r.tool_name}` (Q={r.q_value:.1f}, Visits={r.visits}) → {r.rationale}"
-                                for r in recs
-                            ]
+                            rec_lines = []
+                            for r in recs:
+                                combo_str = f" [Combo: {r.combo_chain[0]} ➔ {r.combo_chain[1]}]" if len(r.combo_chain) > 1 else ""
+                                rec_lines.append(f"- `{r.tool_name}` (Q={r.q_value:.1f}, Visits={r.visits}){combo_str} → {r.rationale}")
                             rec_block = (
                                 f"[🎯 GỢI Ý CHIẾN THUẬT (TACTICAL POLICY ENGINE - Q-LEARNING)]\n"
                                 f"Trạng thái mục tiêu: `{current_state_key}`\n"
-                                f"Top hành động được tối ưu hóa toán học (UCB1) dựa trên dữ liệu tích lũy:\n"
+                                f"Top hành động được tối ưu hóa toán học (UCB1 & Kill-Chain) dựa trên dữ liệu tích lũy:\n"
                                 + "\n".join(rec_lines)
                                 + "\n(Hãy cân nhắc ưu tiên các công cụ này nếu phù hợp với ngữ cảnh mục tiêu)."
                             )
@@ -2582,11 +2584,13 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                     is_duplicate_call=is_duplicate_call,
                                 )
                                 post_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
+                                prev_tool = tools_called[-2] if len(tools_called) >= 2 else None
                                 new_q = tactical_policy.record_outcome(
                                     state_key=pre_state_key,
                                     action=tool_name,
                                     reward=reward,
                                     next_state_key=post_state_key,
+                                    previous_action=prev_tool,
                                 )
                                 color = "green" if reward > 0 else ("red" if reward < 0 else "dim")
                                 console.print(
