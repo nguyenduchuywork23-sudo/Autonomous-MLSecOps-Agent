@@ -1,11 +1,11 @@
 # Autonomous Local MLSecOps Agent v4.1
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Security-Red%20Team%20%7C%20SOC-red?style=for-the-badge&logo=target" alt="Security Domain" />
-  <img src="https://img.shields.io/badge/AI-Agentic%20ReAct%20Loop-blue?style=for-the-badge&logo=openai" alt="AI Agent" />
-  <img src="https://img.shields.io/badge/Protocol-Model%20Context%20Protocol%20(MCP)-blueviolet?style=for-the-badge" alt="MCP" />
-  <img src="https://img.shields.io/badge/Toolkit-100%25%20Docker%20Containerized-blue?style=for-the-badge&logo=docker" alt="Docker" />
-  <img src="https://img.shields.io/badge/OPSEC-100%25%20Offline%20%2F%20Local%20LLM-success?style=for-the-badge" alt="Offline" />
+  <a href="#system-architecture"><img src="https://img.shields.io/badge/Architecture-Dual--Agent%20%7C%20ReAct-0f172a?style=flat-square" alt="Architecture" /></a>
+  <a href="#model-context-protocol-fastmcp--docker-arsenal"><img src="https://img.shields.io/badge/Interface-FastMCP%20Protocol-0f172a?style=flat-square" alt="MCP" /></a>
+  <a href="#model-context-protocol-fastmcp--docker-arsenal"><img src="https://img.shields.io/badge/Toolkit-31%2B%20Docker%20Containers-0f172a?style=flat-square&logo=docker" alt="Docker" /></a>
+  <a href="#enterprise-rag-tactical-memory"><img src="https://img.shields.io/badge/Tactical%20Memory-ChromaDB%20%7C%20HNSW-0f172a?style=flat-square" alt="RAG" /></a>
+  <img src="https://img.shields.io/badge/OPSEC-100%25%20Offline%20%2F%20Local%20LLM-15803d?style=flat-square" alt="Offline" />
 </p>
 
 ```
@@ -21,9 +21,9 @@
 
 ---
 
-## 🌟 Key Highlights & Innovations
+## Key Innovations & Capabilities
 
-### 1. 🤖 Dual-Agent Collaborative Loop (Red Team & SOC Collaboration)
+### 1. Dual-Agent Collaborative Loop (Red Team & SOC Synergy)
 Unlike standard single-loop LLM agents, this system pairs two specialized local AI models running in real-time synergy:
 * **Offensive Red Teamer (Qwen-3.5 9B / 7B)**:
   * Executes a structured **ReAct** (*Reasoning + Acting*) loop to systematically discover, fingerprint, and exploit attack surfaces.
@@ -34,7 +34,7 @@ Unlike standard single-loop LLM agents, this system pairs two specialized local 
   * **Compound Threat Correlation**: Automatically evaluates findings against 8 multi-stage exploit chains.
   * **Strategic In-flight Advisor**: Dynamically injects observations and defense-in-depth suggestions into the Red Teamer's active context window.
 
-### 2. 🐳 Model Context Protocol (FastMCP) & Docker Arsenal (31+ Tools)
+### 2. Model Context Protocol (FastMCP) & Docker Arsenal (31+ Tools)
 Every tool operates in an isolated Docker container via FastMCP stdio interface for maximum security, reproducibility, and OPSEC:
 * **Context Distillation Engine**: Raw terminal outputs (which can exceed tens of thousands of lines) are sanitized, distilled, and converted into dense, high-signal JSON/Markdown snippets to preserve token budget.
 * **Human-in-the-Loop (HITL) Safety Gate**: Destructive actions (database dumping, brute-force attacks, remote exploit execution) strictly require interactive operator confirmation before dispatch.
@@ -44,14 +44,14 @@ Every tool operates in an isolated Docker container via FastMCP stdio interface 
 | **Reconnaissance & OSINT** | 23 | `nmap` (fast & deep), `nuclei` (vulnerability & CVE templates), `subfinder`, `ffuf`, `dirb/gobuster`, `nikto`, `whatweb`, `testssl`, `httpx`, `cors`, `sensitive_files`, `waf_detect`, `dns_security_audit`, `ssl_cert_audit`, `security_txt_audit`, `cookie_security_audit`, `http_headers_audit`, `api_docs_audit`, `subdomain_takeover_audit`, `crawler`, `browser` |
 | **Exploitation & Cracking** | 8 | `sqlmap` (scan & schema dump), `hydra` (SSH, HTTP login form), `wpscan`, `metasploit` (search & exploit), `bruteforce`, `xss_scanner` |
 
-### 3. 🧠 Enterprise RAG Tactical Long-Term Memory
+### 3. Enterprise RAG Tactical Long-Term Memory
 An intelligent vector database pipeline ensuring the agent remembers past attack surfaces and tactics:
 * **ChromaDB Vector Store** with **HNSW Indexing** for sub-50ms vector queries.
 * **Thread-safe LRU Cache (`CachedEmbeddingFunction`)**: Eliminates redundant Ollama/ONNX forward passes, dropping repeated query latency from ~250ms to **<0.01ms**.
 * **4-Stage Retrieval Pipeline**:
   $$\text{Target Query} \xrightarrow{\text{Pre-filtering}} \text{Metadata Filters} \xrightarrow{\text{Vector Search}} \text{HNSW Top-K} \xrightarrow{\text{Re-ranking}} \text{FlashRank ONNX (MiniLM-L-12-v2)} \xrightarrow{\text{Cluster}} \text{Tactical Memory}$$
 
-### 4. 📊 Multi-Format Enterprise Reporting Engine
+### 4. Multi-Format Enterprise Reporting Engine
 Automatically compiles penetration testing engagements into professional corporate deliverables:
 * **DOCX Report**: Fully formatted corporate report featuring an Executive Summary, Risk Matrix, CVSS v3.1 and CWE classifications, Kill-Chain Timeline, Detailed Findings with severity badges, and Prioritized Remediation Roadmaps.
 * **Markdown & JSON Summaries**: Machine-readable assessment summaries for CI/CD integration.
@@ -59,7 +59,7 @@ Automatically compiles penetration testing engagements into professional corpora
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```mermaid
 graph TD
@@ -94,7 +94,7 @@ graph TD
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 ├── config.yaml              # Centralized configuration (LLMs, timeouts, HITL, RAG)
@@ -121,7 +121,7 @@ graph TD
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
 ### 1. Prerequisites
 * **Operating System**: Linux / macOS / Windows (WSL2 or PowerShell)
@@ -178,13 +178,17 @@ pytest tests/ -v
 
 ---
 
-## 🔒 Security & Ethical Disclaimer
+## Security & Ethical Disclaimer
 
-> **IMPORTANT**: This framework is developed strictly for **authorized penetration testing, red teaming research, defensive security engineering, and academic evaluation**. Unauthorized testing against systems without prior written consent from the system owner is illegal and unethical. The authors assume no liability for misuse or damage caused by this software.
+> [!CAUTION]
+> **Authorized Testing Only**: This framework is designed strictly for **authorized penetration testing, red teaming research, defensive security engineering, and academic evaluation**. Performing security assessments against target systems without explicit prior written authorization is unlawful. The authors assume no liability for misuse, unintended side effects, or operational disruption resulting from this software.
 
 ---
 
-## 👤 Author
-* **Nguyen Duc Huy**
-* GitHub: [@nguyenduchuywork23-sudo](https://github.com/nguyenduchuywork23-sudo)
-* Email: nguyenduchuywork23@gmail.com
+## Author & Contact
+
+| Field | Details |
+| :--- | :--- |
+| **Author** | **Nguyen Duc Huy** |
+| **GitHub** | [@nguyenduchuywork23-sudo](https://github.com/nguyenduchuywork23-sudo) |
+| **Email** | [nguyenduchuywork23@gmail.com](mailto:nguyenduchuywork23@gmail.com) |
