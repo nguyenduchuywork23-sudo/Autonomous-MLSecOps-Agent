@@ -1,10 +1,10 @@
-# Autonomous Local MLSecOps Agent v4.1
+# Autonomous Local MLSecOps Agent
 
 <p align="center">
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Architecture-Dual--Agent%20%7C%20ReAct-0f172a?style=flat-square" alt="Architecture" /></a>
   <a href="#model-context-protocol-fastmcp--docker-arsenal"><img src="https://img.shields.io/badge/Interface-FastMCP%20Protocol-0f172a?style=flat-square" alt="MCP" /></a>
   <a href="#model-context-protocol-fastmcp--docker-arsenal"><img src="https://img.shields.io/badge/Toolkit-31%2B%20Docker%20Containers-0f172a?style=flat-square&logo=docker" alt="Docker" /></a>
-  <a href="#enterprise-rag-tactical-memory"><img src="https://img.shields.io/badge/Tactical%20Memory-ChromaDB%20%7C%20HNSW-0f172a?style=flat-square" alt="RAG" /></a>
+  <a href="#tactical-memory-rag-pipeline"><img src="https://img.shields.io/badge/Tactical%20Memory-ChromaDB%20%7C%20HNSW-0f172a?style=flat-square" alt="RAG" /></a>
   <img src="https://img.shields.io/badge/OPSEC-100%25%20Offline%20%2F%20Local%20LLM-15803d?style=flat-square" alt="Offline" />
 </p>
 
@@ -14,10 +14,10 @@
  | |\/| | |    \___ \/ _ \/ __| | | | | '_ \/ __| 
  | |  | | |___  ___) |  __/ (__  | |_| | |_) \__ \ 
  |_|  |_|_____||____/ \___|\___|\___/| .__/|___/ 
-                                      |_|   v4.1   
+                                      |_|          
 ```
 
-> **Autonomous Local MLSecOps Agent v4.1** is an enterprise-grade, goal-driven **Autonomous Red Team & SOC Platform** operating **100% locally and offline**. Powered by a collaborative **Dual-Agent Architecture**, the **Model Context Protocol (MCP)**, and an **Enterprise RAG Tactical Memory**, it automates offensive reconnaissance, vulnerability assessment, strategic kill-chain execution, and multi-format compliance reporting without exposing sensitive infrastructure telemetry to external cloud APIs.
+> **Autonomous Local MLSecOps Agent** is a goal-driven **Autonomous Red Team & SOC Platform** operating **100% locally and offline**. Powered by a collaborative **Dual-Agent Architecture**, the **Model Context Protocol (MCP)**, and **RAG Tactical Memory**, it automates offensive reconnaissance, vulnerability assessment, strategic kill-chain execution, and multi-format reporting without exposing sensitive infrastructure telemetry to external cloud APIs.
 
 ---
 
@@ -44,16 +44,16 @@ Every tool operates in an isolated Docker container via FastMCP stdio interface 
 | **Reconnaissance & OSINT** | 23 | `nmap` (fast & deep), `nuclei` (vulnerability & CVE templates), `subfinder`, `ffuf`, `dirb/gobuster`, `nikto`, `whatweb`, `testssl`, `httpx`, `cors`, `sensitive_files`, `waf_detect`, `dns_security_audit`, `ssl_cert_audit`, `security_txt_audit`, `cookie_security_audit`, `http_headers_audit`, `api_docs_audit`, `subdomain_takeover_audit`, `crawler`, `browser` |
 | **Exploitation & Cracking** | 8 | `sqlmap` (scan & schema dump), `hydra` (SSH, HTTP login form), `wpscan`, `metasploit` (search & exploit), `bruteforce`, `xss_scanner` |
 
-### 3. Enterprise RAG Tactical Long-Term Memory
+### 3. Tactical Memory (RAG Pipeline)
 An intelligent vector database pipeline ensuring the agent remembers past attack surfaces and tactics:
 * **ChromaDB Vector Store** with **HNSW Indexing** for sub-50ms vector queries.
 * **Thread-safe LRU Cache (`CachedEmbeddingFunction`)**: Eliminates redundant Ollama/ONNX forward passes, dropping repeated query latency from ~250ms to **<0.01ms**.
 * **4-Stage Retrieval Pipeline**:
   $$\text{Target Query} \xrightarrow{\text{Pre-filtering}} \text{Metadata Filters} \xrightarrow{\text{Vector Search}} \text{HNSW Top-K} \xrightarrow{\text{Re-ranking}} \text{FlashRank ONNX (MiniLM-L-12-v2)} \xrightarrow{\text{Cluster}} \text{Tactical Memory}$$
 
-### 4. Multi-Format Enterprise Reporting Engine
-Automatically compiles penetration testing engagements into professional corporate deliverables:
-* **DOCX Report**: Fully formatted corporate report featuring an Executive Summary, Risk Matrix, CVSS v3.1 and CWE classifications, Kill-Chain Timeline, Detailed Findings with severity badges, and Prioritized Remediation Roadmaps.
+### 4. Automated Multi-Format Reporting
+Automatically compiles penetration testing engagements into professional deliverables:
+* **DOCX Report**: Fully formatted report featuring an Executive Summary, Risk Matrix, CVSS v3.1 and CWE classifications, Kill-Chain Timeline, Detailed Findings with severity badges, and Prioritized Remediation Roadmaps.
 * **Markdown & JSON Summaries**: Machine-readable assessment summaries for CI/CD integration.
 * **Forensic Audit Trail (`.jsonl`)**: Immutable audit logs capturing every prompt, tool execution, payload, and result timestamp for digital forensics and compliance review.
 
@@ -63,7 +63,7 @@ Automatically compiles penetration testing engagements into professional corpora
 
 ```mermaid
 graph TD
-    User([Security Operator]) -->|Target & Objective| Main[CLI / Orchestrator v4.1]
+    User([Security Operator]) -->|Target & Objective| Main[CLI / Orchestrator]
     
     subgraph "Dual-Agent Core (Local Ollama)"
         Main --> RedTeam[Red Teamer Agent\nQwen-3.5 9B / 7B\nReAct Loop + Relentless Pursuit]
@@ -86,7 +86,7 @@ graph TD
 
     subgraph "Audit & Deliverables"
         SOC --> RepState[ReportState Shared Memory]
-        RepState --> DOCX[Enterprise DOCX Report]
+        RepState --> DOCX[DOCX Report]
         RepState --> MD[Markdown & JSON Report]
         Main --> Audit[Forensic Audit Trail .jsonl]
     end
@@ -114,7 +114,7 @@ graph TD
 │   │   └── metasploit_server.py
 │   └── utils/
 │       ├── config.py           # Configuration parser & pre-flight health checks
-│       ├── vector_store.py     # Enterprise RAG & FlashRank ONNX re-ranking
+│       ├── vector_store.py     # Tactical Memory (RAG) & FlashRank ONNX re-ranking
 │       └── report_generator.py # Multi-format Word (.docx) & JSON report generator
 └── tests/                   # 19 comprehensive test suites (E2E, unit & integration)
 ```

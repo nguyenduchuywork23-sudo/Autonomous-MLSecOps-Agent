@@ -1,5 +1,5 @@
 # ============================================================
-# MLSecOps Agent v4.1 — Configuration
+# MLSecOps Agent — Configuration
 # ============================================================
 # Override any value via environment variable with prefix MLSEC_
 # Example: MLSEC_MODEL=gemma2:9b  overrides  model below
@@ -83,7 +83,7 @@ reporter:
     - docker_resolve_dns
     - browse_webpage
 
-# --- Reporting (Multi-Format: DOCX, Markdown, JSON — v4.1) ---
+# --- Reporting (Multi-Format: DOCX, Markdown, JSON) ---
 reports:
   output_dir: "reports"
   generate_word: true
@@ -98,7 +98,7 @@ wordlists:
   default_password: "rockyou.txt"
   default_directory: "dirb_common.txt"
 
-# --- Vector Database & RAG Long-term Memory (Enterprise Self-Learning) ---
+# --- Vector Database & RAG Long-term Memory (Tactical Self-Learning) ---
 vectordb:
   enabled: true
   path: "data/chromadb"

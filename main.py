@@ -1,4 +1,4 @@
-"""Interactive CLI entrypoint for Autonomous Local MLSecOps Agent v4.0.
+"""Interactive CLI entrypoint for Autonomous Local MLSecOps Agent.
 
 Supports both interactive mode and single-shot command-line mode.
 
@@ -33,7 +33,7 @@ BANNER = r"""[bold green]
  | |\/| | |    \___ \/ _ \/ __| | | | | '_ \/ __| 
  | |  | | |___  ___) |  __/ (__  | |_| | |_) \__ \ 
  |_|  |_|_____||____/ \___|\___|\___/| .__/|___/ 
-                                      |_|   v4.1   
+                                      |_|          
 [/bold green]"""
 
 RECON_TOOLS = [
@@ -61,7 +61,7 @@ def _print_system_info():
 
     console.print(
         Panel.fit(
-            "[bold green]Local MLSecOps Agent v4.1[/bold green] "
+            "[bold green]Local MLSecOps Agent[/bold green] "
             "[dim]| Goal-Driven Autonomous Red Team & SOC Platform[/dim]\n\n"
             f"[bold cyan]🔍 Recon Tools ({len(RECON_TOOLS)}):[/bold cyan]\n"
             f"[dim]{recon_str}[/dim]\n\n"
@@ -69,7 +69,7 @@ def _print_system_info():
             f"[dim]{exploit_str}[/dim]\n\n"
             "[bold yellow]⚡ Workflow:[/bold yellow] [dim]Recon First → Review → Full Pentest (Optional)[/dim]\n"
             "[bold red]🔒 HITL Required:[/bold red] [dim]sqlmap, sqlmap_dump, hydra, wpscan, msf[/dim]\n"
-            "[bold magenta]🆕 v4.1:[/bold magenta] [dim]Dual-AI Goal Pursuit | Multi-Format Reports (DOCX/MD/JSON) | Real-time SOC Advisor[/dim]",
+            "[bold magenta]Features:[/bold magenta] [dim]Dual-AI Goal Pursuit | Multi-Format Reports (DOCX/MD/JSON) | Real-time SOC Advisor[/dim]",
             title=f"[bold cyan]SYSTEM INITIALIZED — {len(RECON_TOOLS) + len(EXPLOIT_TOOLS)} TOOLS ONLINE[/bold cyan]",
             border_style="green",
         )
@@ -113,7 +113,7 @@ def _print_health_check() -> bool:
 def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments for single-shot mode."""
     parser = argparse.ArgumentParser(
-        description="MLSecOps Agent v4.1 — Autonomous Red Team Platform",
+        description="MLSecOps Agent — Autonomous Red Team Platform",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -123,7 +123,7 @@ def _parse_args() -> argparse.Namespace:
             "  python main.py --target site1.com,site2.com   # Multiple targets\n"
         ),
     )
-    parser.add_argument("--version", "-v", action="version", version="MLSecOps Agent v4.1",
+    parser.add_argument("--version", "-v", action="version", version="MLSecOps Agent",
                         help="Show program version and exit.")
     parser.add_argument("--target", "-t", type=str, default=None,
                         help="Target IP/URL (comma-separated for multiple). Omit for interactive mode.")
