@@ -769,9 +769,69 @@ def _build_tool_reference(tools_schema: list) -> str:
 # Retry Logic
 # ---------------------------------------------------------------------------
 
+def _get_tool_timeout(tool_name: str) -> float:
+    """Resolve configured per-tool execution timeout with safety buffer.
+
+    Reads timeouts from config.yaml with a 15-second buffer for IPC/subprocess
+    teardown, falling back to 120s default if unspecified.
+    """
+    clean_name = tool_name.replace("docker_", "") if tool_name.startswith("docker_") else tool_name
+    timeout_map = {
+        "crawl_web": cfg_get("timeouts.crawler", 60),
+        "crawler": cfg_get("timeouts.crawler", 60),
+        "scan_ports_fast": cfg_get("timeouts.fast_scan", 120),
+        "scan_ports_deep": cfg_get("timeouts.deep_scan", 300),
+        "nuclei_scan": cfg_get("timeouts.nuclei", 300),
+        "nuclei": cfg_get("timeouts.nuclei", 300),
+        "sqlmap_scan": cfg_get("timeouts.sqlmap", 300),
+        "sqlmap_dump": cfg_get("timeouts.sqlmap", 300),
+        "sqlmap": cfg_get("timeouts.sqlmap", 300),
+        "bruteforce": cfg_get("timeouts.hydra", 600),
+        "bruteforce_ssh": cfg_get("timeouts.hydra", 600),
+        "bruteforce_http_form": cfg_get("timeouts.hydra", 600),
+        "hydra": cfg_get("timeouts.hydra", 600),
+        "msf_search": cfg_get("timeouts.metasploit", 180),
+        "whatweb": cfg_get("timeouts.whatweb", 60),
+        "nikto_scan": cfg_get("timeouts.nikto", 240),
+        "nikto": cfg_get("timeouts.nikto", 240),
+        "wpscan": cfg_get("timeouts.wpscan", 300),
+        "subfinder": cfg_get("timeouts.subfinder", 120),
+        "ffuf": cfg_get("timeouts.ffuf", 180),
+        "dirb_scan": cfg_get("timeouts.gobuster", 120),
+        "gobuster": cfg_get("timeouts.gobuster", 120),
+        "testssl": cfg_get("timeouts.testssl", 300),
+        "sensitive_files_scan": cfg_get("timeouts.sensitive_files", 60),
+        "sensitive_files": cfg_get("timeouts.sensitive_files", 60),
+        "cors_scan": cfg_get("timeouts.cors", 60),
+        "cors": cfg_get("timeouts.cors", 60),
+        "xss_scan": cfg_get("timeouts.xss", 120),
+        "xss": cfg_get("timeouts.xss", 120),
+        "httpx_probe": cfg_get("timeouts.httpx", 120),
+        "httpx": cfg_get("timeouts.httpx", 120),
+        "ssl_cert_audit": cfg_get("timeouts.ssl_cert", 30),
+        "ssl_cert": cfg_get("timeouts.ssl_cert", 30),
+        "dns_security_audit": cfg_get("timeouts.dns_security", 30),
+        "dns_security": cfg_get("timeouts.dns_security", 30),
+        "security_txt_audit": cfg_get("timeouts.security_txt", 30),
+        "security_txt": cfg_get("timeouts.security_txt", 30),
+        "cookie_security_audit": cfg_get("timeouts.cookie_security", 30),
+        "cookie_security": cfg_get("timeouts.cookie_security", 30),
+        "http_headers_audit": cfg_get("timeouts.http_headers", 30),
+        "http_headers": cfg_get("timeouts.http_headers", 30),
+        "api_docs_audit": cfg_get("timeouts.api_docs", 60),
+        "api_docs": cfg_get("timeouts.api_docs", 60),
+        "subdomain_takeover_audit": cfg_get("timeouts.subdomain_takeover", 60),
+        "subdomain_takeover": cfg_get("timeouts.subdomain_takeover", 60),
+        "waf_detect": cfg_get("timeouts.waf_detect", 30),
+    }
+    base = timeout_map.get(clean_name, timeout_map.get(tool_name, 120))
+    return float(base) + 15.0
+
+
 async def _retry_tool_call(session, tool_name: str, arguments: dict,
-                           max_retries: int = 2, delay: float = 3.0) -> str:
-    """Call an MCP tool with automatic retry on failure.
+                           max_retries: int = 2, delay: float = 3.0,
+                           timeout: float | None = None) -> str:
+    """Call an MCP tool with automatic retry on failure and client-side timeout protection.
 
     Args:
         session: MCP ClientSession.
@@ -779,19 +839,35 @@ async def _retry_tool_call(session, tool_name: str, arguments: dict,
         arguments: Tool arguments dict.
         max_retries: Maximum number of retry attempts.
         delay: Delay in seconds between retries (doubles each attempt).
+        timeout: Optional override for per-tool timeout (in seconds).
 
     Returns:
         Tool result as string.
     """
+    call_timeout = timeout or _get_tool_timeout(tool_name)
     last_error = None
     for attempt in range(max_retries + 1):
         try:
-            tool_result = await session.call_tool(tool_name, arguments)
+            tool_result = await asyncio.wait_for(
+                session.call_tool(tool_name, arguments),
+                timeout=call_timeout,
+            )
             result_text_parts = [
                 item.text if hasattr(item, "text") else str(item)
                 for item in tool_result.content
             ]
             return "\n".join(result_text_parts)
+        except asyncio.TimeoutError:
+            last_error = f"Tool execution timed out after {call_timeout:.0f}s"
+            if attempt < max_retries:
+                wait_time = delay * (2 ** attempt)
+                console.print(
+                    f"[bold yellow]⏱️ Tool '{tool_name}' timed out after {call_timeout:.0f}s (attempt {attempt + 1}/{max_retries + 1}). "
+                    f"Retrying in {wait_time:.0f}s...[/bold yellow]"
+                )
+                await asyncio.sleep(wait_time)
+            else:
+                break
         except Exception as err:
             last_error = err
             if attempt < max_retries:
@@ -808,7 +884,7 @@ async def _retry_tool_call(session, tool_name: str, arguments: dict,
 
 
 # ---------------------------------------------------------------------------
-# Real-time Reporter Agent (v4.0) — Dual-Agent Collaboration
+# Real-time Reporter Agent — Dual-Agent Collaboration
 # ---------------------------------------------------------------------------
 
 _REPORTER_SKIP_TOOLS: set[str] | None = None
@@ -2279,654 +2355,820 @@ async def run_agent(prompt: str, server_script: str | None = None,
             _mission_guard_attempts = 0  # Mission Completeness Guard challenge counter
 
             # 5. ReAct Loop with Real-time Reporter
-            for iteration in range(1, max_iterations + 1):
-                # Context Window Management: compress old messages
-                messages = _summarize_old_messages(messages, context_window, report_state=report_state)
-
-                console.print(
-                    f"\n[bold yellow]── Iteration {iteration}/{max_iterations} "
-                    f"| Tools: {len(tools_called)} "
-                    f"| Findings: {len(report_state.findings)} "
-                    f"| Risk: {report_state.risk_score}/10 "
-                    f"| Msgs: {len(messages)} ──[/bold yellow]"
-                )
-
-                # AUTO-ESCALATION: When recon phase is done, push model to exploit
-                if report_state.scan_mode == "full" and not getattr(report_state, '_exploit_escalated', False):
-                    _RECON_TOOLS = {
-                        "docker_resolve_dns", "docker_scan_ports_fast", "docker_scan_ports_deep",
-                        "docker_crawl_web", "docker_whatweb", "docker_subfinder", "docker_httpx_probe",
-                        "docker_nuclei_scan", "docker_sensitive_files_scan", "docker_cors_scan",
-                        "docker_http_headers_audit", "docker_ssl_cert_audit", "docker_dns_security_audit",
-                        "docker_testssl", "docker_security_txt_audit", "docker_waf_detect",
-                        "docker_nikto_scan", "docker_ffuf", "docker_dirb_scan",
-                        "docker_cookie_security_audit", "docker_api_docs_audit",
-                        "docker_subdomain_takeover_audit", "browse_webpage",
-                    }
-                    recon_done = len(set(tools_called) & _RECON_TOOLS) >= 8
-                    if recon_done:
-                        report_state._exploit_escalated = True
-                        # Build exploit guidance based on what recon found
-                        exploit_hints = []
-                        if report_state.attack_surface.parameterized_urls:
-                            exploit_hints.append(
-                                f"URLs with parameters found: {list(report_state.attack_surface.parameterized_urls)[:3]} "
-                                "→ RUN docker_sqlmap_scan AND docker_xss_scan on these URLs NOW."
-                            )
-                        if report_state.attack_surface.login_forms:
-                            exploit_hints.append(
-                                f"Login forms found: {list(report_state.attack_surface.login_forms)[:2]} "
-                                "→ RUN bruteforce_http_form on these endpoints NOW."
-                            )
-                        if 22 in report_state.attack_surface.open_ports:
-                            exploit_hints.append("SSH port 22 is open → RUN bruteforce_ssh NOW.")
-                        # Always suggest trying sqlmap on root if no params found
-                        if not report_state.attack_surface.parameterized_urls:
-                            exploit_hints.append(
-                                f"No parameterized URLs found, but TRY docker_sqlmap_scan on "
-                                f"'{report_state.target}' anyway to test for blind SQLi."
-                            )
-                        exploit_hints.append(
-                            "Also try: docker_xss_scan, docker_wpscan (if WordPress), docker_msf_search (if CVEs found)."
-                        )
-                        escalation_msg = (
-                            "⚡ RECON PHASE COMPLETE. SWITCHING TO EXPLOITATION PHASE NOW. ⚡\n"
-                            f"You have completed {len(set(tools_called) & _RECON_TOOLS)} recon tools. "
-                            "STOP running recon tools. START using EXPLOIT tools:\n"
-                            + "\n".join(f"- {h}" for h in exploit_hints)
-                        )
-                        messages.append({"role": "user", "content": escalation_msg})
-                        console.print(f"[bold green]⚡ AUTO-ESCALATION: Recon done → Exploit phase[/bold green]")
-                        logger.info("Auto-escalation triggered after %d recon tools", len(set(tools_called) & _RECON_TOOLS))
-
-                # Dynamic Per-Iteration RAG Tactical Recall (every 3 iterations when new tech/obstacles emerge)
-                if vector_memory and iteration > 1 and iteration % 3 == 0:
-                    try:
-                        current_suggestion = report_state.reporter_suggestions[-1] if report_state.reporter_suggestions else ""
-                        known_tech = list(report_state.attack_surface.detected_technologies)
-                        known_waf = report_state.attack_surface.detected_waf.get("primary_waf", "")
-                        query_str = current_suggestion or f"attack {' '.join(known_tech)}"
-                        tactical_recalled = vector_memory.recall_attack_patterns(
-                            query=query_str,
-                            tech_stack=known_tech or None,
-                            waf=known_waf or None,
-                            top_k=2,
-                            min_similarity=float(vectordb_cfg.get("min_similarity", 0.65)),
-                            enable_rerank=True,
-                        )
-                        if tactical_recalled:
-                            tac_block = vector_memory.format_past_experience_block(tactical_recalled, max_tokens=350)
-                            if not any(tac_block[:60] in str(m.get("content", "")) for m in messages[-2:]):
-                                messages.append({
-                                    "role": "user",
-                                    "content": f"[🧠 BỘ NHỚ CHIẾN THUẬT QUÁ KHỨ (TACTICAL RECALL)]\n{tac_block}"
-                                })
-                                report_state.record_rag_applied_patterns(tactical_recalled)
-                                console.print(f"[dim green]🧠 RAG: Nạp {len(tactical_recalled)} kịch bản chiến thuật vào ngữ cảnh bước {iteration}[/dim green]")
-                    except Exception:
-                        pass
-
-                # Dynamic Tactical Policy Guidance (Q-learning & UCB1 Bandit)
-                current_state_key = ""
-                if tactical_policy:
-                    try:
-                        current_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
-                        last_act = tools_called[-1] if tools_called else None
-                        recs = tactical_policy.recommend_actions(
-                            state_key=current_state_key,
-                            top_k=3,
-                            exclude_tools=set(tools_called) if len(tools_called) < 25 else None,
-                            last_action=last_act,
-                        )
-                        if recs:
-                            rec_lines = []
-                            for r in recs:
-                                combo_str = f" [Combo: {r.combo_chain[0]} ➔ {r.combo_chain[1]}]" if len(r.combo_chain) > 1 else ""
-                                rec_lines.append(f"- `{r.tool_name}` (Q={r.q_value:.1f}, Visits={r.visits}){combo_str} → {r.rationale}")
-                            rec_block = (
-                                f"[⚡ CHẾ ĐỘ HIỆP ĐỒNG CHIẾN THUẬT: QWEN CHỈ HUY x CỐ VẤN TOÁN HỌC]\n"
-                                f"Trạng thái mục tiêu: `{current_state_key}`\n"
-                                f"Cố vấn Toán học (Policy Engine & Markov Kill-Chain) đề xuất các vector tối ưu:\n"
-                                + "\n".join(rec_lines)
-                                + "\n"
-                                f"🛡️ QUYỀN HẠN CỦA RED TEAMER (QWEN):\n"
-                                f"- Bạn là CHỈ HUY TỐI CAO: Cân nhắc gợi ý toán học trên kết hợp với suy luận ngữ nghĩa của bạn.\n"
-                                f"- Tự do tùy biến tham số ('arguments') sâu sắc nhất (URL cụ thể, payload, wordlist) để công cụ đạt hiệu quả tối đa!\n"
-                                f"- Nếu bạn phát hiện một dấu hiệu ngữ nghĩa đặc biệt vượt ngoài gợi ý trên, hãy tự tin triển khai công cụ bạn đánh giá là đúng đắn nhất."
-                            )
-                            if not any(f"Trạng thái mục tiêu: `{current_state_key}`" in str(m.get("content", "")) for m in messages[-2:]):
-                                messages.append({
-                                    "role": "user",
-                                    "content": rec_block
-                                })
-                                console.print(f"[dim cyan]🎯 Policy Engine: Gợi ý {len(recs)} công cụ tối ưu cho state [{current_state_key}][/dim cyan]")
-                    except Exception as e:
-                        logger.debug("Tactical policy recommendation error: %s", e)
-
-                try:
-                    call_kwargs = {
-                        "model": model,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "response_format": {"type": "json_object"},  # OpenAI JSON mode
-                    }
-                    if extra_body:
-                        # Disable Qwen3.5 thinking mode via Ollama OpenAI-compatible API
-                        # reasoning_effort="none" is the correct parameter for /v1/ endpoint
-                        # (think=false only works with native /api/ endpoint)
-                        extra_body_with_think = {**extra_body, "reasoning_effort": "none"}
-                        call_kwargs["extra_body"] = extra_body_with_think
-
-                    response = await asyncio.wait_for(
-                        client.chat.completions.create(**call_kwargs),
-                        timeout=180,
+            try:
+                for iteration in range(1, max_iterations + 1):
+                    # Context Window Management: compress old messages
+                    messages = _summarize_old_messages(messages, context_window, report_state=report_state)
+    
+                    console.print(
+                        f"\n[bold yellow]── Iteration {iteration}/{max_iterations} "
+                        f"| Tools: {len(tools_called)} "
+                        f"| Findings: {len(report_state.findings)} "
+                        f"| Risk: {report_state.risk_score}/10 "
+                        f"| Msgs: {len(messages)} ──[/bold yellow]"
                     )
-                    msg = response.choices[0].message
-                    finish_reason = response.choices[0].finish_reason
-                    response_content = msg.content or ""
-                    # If content is empty but reasoning exists, model was in thinking mode
-                    if not response_content.strip():
-                        reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None) or ""
-                        if reasoning:
-                            response_content = reasoning
-                    if finish_reason == "length":
-                        logger.warning("LLM output truncated (finish_reason=length) at iteration %d", iteration)
-
-                    # Strip Qwen3.5 thinking mode <think>...</think> tags
-                    # These cause JSON extraction failures by emitting long
-                    # free-text reasoning before the actual JSON output.
-                    response_content_clean = _clean_thinking_tags(response_content)
-                    # If after stripping think tags there is usable content, prefer it
-                    if response_content_clean:
-                        response_content = response_content_clean
-                except asyncio.TimeoutError:
-                    console.print("[bold red]⏱️ LLM call timed out after 180s. Retrying...[/bold red]")
-                    audit.log("llm_timeout", {"iteration": iteration})
-                    messages.append({"role": "user", "content": "System Notification: Previous request timed out. Please proceed with next step."})
-                    continue
-                except Exception as llm_err:
-                    err_msg = str(llm_err).lower()
-                    if ("cuda" in err_msg or "ptx" in err_msg or "0xc0000409" in err_msg or "llama-server" in err_msg) and extra_body.get("options", {}).get("num_gpu") != 0:
-                        console.print("[bold yellow]⚡ Phát hiện lỗi CUDA/PTX JIT từ GPU driver — Tự động chuyển sang CPU an toàn (num_gpu=0)...[/bold yellow]")
-                        extra_body = {
-                            "options": {"num_gpu": 0, "num_predict": num_predict, "num_ctx": num_ctx},
-                            "keep_alive": keep_alive,
-                            "format": "json",
+    
+                    # AUTO-ESCALATION: When recon phase is done, push model to exploit
+                    if report_state.scan_mode == "full" and not getattr(report_state, '_exploit_escalated', False):
+                        _RECON_TOOLS = {
+                            "docker_resolve_dns", "docker_scan_ports_fast", "docker_scan_ports_deep",
+                            "docker_crawl_web", "docker_whatweb", "docker_subfinder", "docker_httpx_probe",
+                            "docker_nuclei_scan", "docker_sensitive_files_scan", "docker_cors_scan",
+                            "docker_http_headers_audit", "docker_ssl_cert_audit", "docker_dns_security_audit",
+                            "docker_testssl", "docker_security_txt_audit", "docker_waf_detect",
+                            "docker_nikto_scan", "docker_ffuf", "docker_dirb_scan",
+                            "docker_cookie_security_audit", "docker_api_docs_audit",
+                            "docker_subdomain_takeover_audit", "browse_webpage",
                         }
-                        audit.log("gpu_fallback_cpu", {"iteration": iteration, "error": str(llm_err)})
-                        await asyncio.sleep(2)
-                        continue
-                    console.print(f"[bold red]❌ LLM Connection Error: {llm_err}[/bold red]")
-                    audit.log("llm_error", {"iteration": iteration, "error": str(llm_err)})
-                    await asyncio.sleep(3)
-                    messages.append({"role": "user", "content": f"System Alert: LLM connection error: {llm_err}. Please retry action."})
-                    continue
-                console.print(f"[yellow]{response_content}[/yellow]")
-
-                # Append assistant response to history
-                messages.append({"role": "assistant", "content": response_content})
-
-                # 6. BULLETPROOF JSON Extraction, Parsing, Tool Matching & Execution
-                try:
-                    parsed_json = _extract_json(response_content)
-                    _consecutive_json_errors = 0  # Reset error budget on success
-
-                    if not isinstance(parsed_json, dict):
-                        raise ValueError("JSON content must be an object/dictionary.")
-
-                    action = parsed_json.get("action")
-                    if not action:
-                        raise ValueError("Missing required key 'action' in JSON block.")
-
-                    # 7. Display Chain-of-Thought reasoning
-                    thought = parsed_json.get("thought")
-                    if thought:
-                        console.print(
-                            Panel(
-                                f"[italic bright_white]{thought}[/italic bright_white]",
-                                title="[bold magenta]🧠 Agent Reasoning (CoT)[/bold magenta]",
-                                border_style="magenta",
-                            )
-                        )
-
-                    # 8. Tool Execution or Final Answer
-                    if action == "call_tool":
-                        tool_name = parsed_json.get("tool_name")
-                        # Auto-correct tool name typos
-                        tool_name = _fuzzy_match_tool_name(tool_name, tools_schema)
-                        arguments = parsed_json.get("arguments", {})
-                        if not isinstance(arguments, dict):
-                            arguments = {}
-                        # Auto-inject target when args are empty (from truncated JSON repair)
-                        if not arguments and report_state and report_state.target:
-                            target_url = report_state.target.rstrip("/")
-                            if tool_name in (
-                                "docker_whatweb", "docker_crawl_web", "docker_nuclei_scan",
-                                "docker_http_headers_audit", "docker_sensitive_files_scan",
-                                "docker_security_txt_audit", "docker_api_docs_audit",
-                                "docker_cors_scan", "docker_nikto_scan",
-                            ):
-                                arguments = {"target_url": target_url}
-                            elif tool_name in ("docker_testssl",):
-                                arguments = {"target_host": target_url}
-                            elif tool_name in ("docker_httpx_probe",):
-                                arguments = {"targets": target_url}
-                            elif tool_name in ("docker_subfinder", "docker_subdomain_takeover_audit"):
-                                from urllib.parse import urlparse
-                                domain = urlparse(target_url).hostname or target_url
-                                arguments = {"domain": domain}
-                            elif tool_name in ("docker_resolve_dns",):
-                                from urllib.parse import urlparse
-                                domain = urlparse(target_url).hostname or target_url
-                                arguments = {"hostname": domain}
-                            else:
-                                arguments = {"target": target_url}
-                            logger.info("Auto-injected target into empty args for %s", tool_name)
-                        # Auto-correct argument names BEFORE anti-loop check
-                        arguments = _normalize_tool_args(tool_name, arguments, tools_schema)
-
-                        # ANTI-LOOP ENFORCEMENT: block duplicate tool+args calls
-                        call_sig = f"{tool_name}::{json.dumps(arguments, sort_keys=True)}"
-                        semantic_sig = _get_semantic_signature(tool_name, arguments)
-                        if call_sig in _call_signatures or semantic_sig in _semantic_signatures:
-                            dup_msg = (
-                                f"SYSTEM BLOCK: You already called '{tool_name}' with these arguments "
-                                f"(or an equivalent target like www vs non-www). "
-                                "This is a DUPLICATE/REDUNDANT call and has been BLOCKED. "
-                                "You MUST use a DIFFERENT tool or explore a DIFFERENT attack vector. "
-                                "If you have exhausted all viable attack vectors, output 'final_answer' immediately."
-                            )
-                            console.print(f"[bold red]🔁 DUPLICATE BLOCKED: {tool_name}[/bold red]")
-                            messages.append({"role": "user", "content": dup_msg})
-                            audit.log("duplicate_blocked", {"tool": tool_name, "args": arguments})
-                            continue
-                        _call_signatures.add(call_sig)
-                        _semantic_signatures.add(semantic_sig)
-
-                        # Human-in-the-Loop gate for destructive tools
-                        if hitl_enabled and tool_name in destructive_tools:
-                            console.print(
-                                f"\n[bold red]⚠️  CẢNH BÁO: AI Agent muốn kích hoạt: {tool_name}[/bold red]"
-                            )
-                            console.print(
-                                f"[dim]Mục tiêu:[/dim] {arguments}"
-                            )
-                            approval = Prompt.ask(
-                                "[bold red]Cho phép không?[/bold red] (Y/N)"
-                            )
-                            if approval.strip().lower() != "y":
-                                console.print(
-                                    "[bold yellow]❌ Operator từ chối. Bỏ qua lệnh này.[/bold yellow]"
+                        recon_done = len(set(tools_called) & _RECON_TOOLS) >= 8
+                        if recon_done:
+                            report_state._exploit_escalated = True
+                            # Build exploit guidance based on what recon found
+                            exploit_hints = []
+                            if report_state.attack_surface.parameterized_urls:
+                                exploit_hints.append(
+                                    f"URLs with parameters found: {list(report_state.attack_surface.parameterized_urls)[:3]} "
+                                    "→ RUN docker_sqlmap_scan AND docker_xss_scan on these URLs NOW."
                                 )
-                                messages.append(
-                                    {
+                            if report_state.attack_surface.login_forms:
+                                exploit_hints.append(
+                                    f"Login forms found: {list(report_state.attack_surface.login_forms)[:2]} "
+                                    "→ RUN bruteforce_http_form on these endpoints NOW."
+                                )
+                            if 22 in report_state.attack_surface.open_ports:
+                                exploit_hints.append("SSH port 22 is open → RUN bruteforce_ssh NOW.")
+                            # Always suggest trying sqlmap on root if no params found
+                            if not report_state.attack_surface.parameterized_urls:
+                                exploit_hints.append(
+                                    f"No parameterized URLs found, but TRY docker_sqlmap_scan on "
+                                    f"'{report_state.target}' anyway to test for blind SQLi."
+                                )
+                            exploit_hints.append(
+                                "Also try: docker_xss_scan, docker_wpscan (if WordPress), docker_msf_search (if CVEs found)."
+                            )
+                            escalation_msg = (
+                                "⚡ RECON PHASE COMPLETE. SWITCHING TO EXPLOITATION PHASE NOW. ⚡\n"
+                                f"You have completed {len(set(tools_called) & _RECON_TOOLS)} recon tools. "
+                                "STOP running recon tools. START using EXPLOIT tools:\n"
+                                + "\n".join(f"- {h}" for h in exploit_hints)
+                            )
+                            messages.append({"role": "user", "content": escalation_msg})
+                            console.print(f"[bold green]⚡ AUTO-ESCALATION: Recon done → Exploit phase[/bold green]")
+                            logger.info("Auto-escalation triggered after %d recon tools", len(set(tools_called) & _RECON_TOOLS))
+    
+                    # Dynamic Per-Iteration RAG Tactical Recall (every 3 iterations when new tech/obstacles emerge)
+                    if vector_memory and iteration > 1 and iteration % 3 == 0:
+                        try:
+                            current_suggestion = report_state.reporter_suggestions[-1] if report_state.reporter_suggestions else ""
+                            known_tech = list(report_state.attack_surface.detected_technologies)
+                            known_waf = report_state.attack_surface.detected_waf.get("primary_waf", "")
+                            query_str = current_suggestion or f"attack {' '.join(known_tech)}"
+                            tactical_recalled = vector_memory.recall_attack_patterns(
+                                query=query_str,
+                                tech_stack=known_tech or None,
+                                waf=known_waf or None,
+                                top_k=2,
+                                min_similarity=float(vectordb_cfg.get("min_similarity", 0.65)),
+                                enable_rerank=True,
+                            )
+                            if tactical_recalled:
+                                tac_block = vector_memory.format_past_experience_block(tactical_recalled, max_tokens=350)
+                                if not any(tac_block[:60] in str(m.get("content", "")) for m in messages[-2:]):
+                                    messages.append({
                                         "role": "user",
-                                        "content": (
-                                            "System Alert: Operator denied permission to run "
-                                            f"'{tool_name}'. Try a different approach or tool."
-                                        ),
-                                    }
+                                        "content": f"[🧠 BỘ NHỚ CHIẾN THUẬT QUÁ KHỨ (TACTICAL RECALL)]\n{tac_block}"
+                                    })
+                                    report_state.record_rag_applied_patterns(tactical_recalled)
+                                    console.print(f"[dim green]🧠 RAG: Nạp {len(tactical_recalled)} kịch bản chiến thuật vào ngữ cảnh bước {iteration}[/dim green]")
+                        except Exception:
+                            pass
+    
+                    # Dynamic Tactical Policy Guidance (Q-learning & UCB1 Bandit)
+                    current_state_key = ""
+                    if tactical_policy:
+                        try:
+                            current_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
+                            last_act = tools_called[-1] if tools_called else None
+                            recs = tactical_policy.recommend_actions(
+                                state_key=current_state_key,
+                                top_k=3,
+                                exclude_tools=set(tools_called) if len(tools_called) < 25 else None,
+                                last_action=last_act,
+                            )
+                            if recs:
+                                rec_lines = []
+                                for r in recs:
+                                    combo_str = f" [Combo: {r.combo_chain[0]} ➔ {r.combo_chain[1]}]" if len(r.combo_chain) > 1 else ""
+                                    rec_lines.append(f"- `{r.tool_name}` (Q={r.q_value:.1f}, Visits={r.visits}){combo_str} → {r.rationale}")
+                                rec_block = (
+                                    f"[⚡ CHẾ ĐỘ HIỆP ĐỒNG CHIẾN THUẬT: QWEN CHỈ HUY x CỐ VẤN TOÁN HỌC]\n"
+                                    f"Trạng thái mục tiêu: `{current_state_key}`\n"
+                                    f"Cố vấn Toán học (Policy Engine & Markov Kill-Chain) đề xuất các vector tối ưu:\n"
+                                    + "\n".join(rec_lines)
+                                    + "\n"
+                                    f"🛡️ QUYỀN HẠN CỦA RED TEAMER (QWEN):\n"
+                                    f"- Bạn là CHỈ HUY TỐI CAO: Cân nhắc gợi ý toán học trên kết hợp với suy luận ngữ nghĩa của bạn.\n"
+                                    f"- Tự do tùy biến tham số ('arguments') sâu sắc nhất (URL cụ thể, payload, wordlist) để công cụ đạt hiệu quả tối đa!\n"
+                                    f"- Nếu bạn phát hiện một dấu hiệu ngữ nghĩa đặc biệt vượt ngoài gợi ý trên, hãy tự tin triển khai công cụ bạn đánh giá là đúng đắn nhất."
                                 )
-                                audit.log("tool_denied", {"tool": tool_name, "args": arguments})
-                                continue
-
-                        console.print(
-                            f"[bold cyan]🔧 Calling Tool:[/bold cyan] [cyan]{tool_name}[/cyan] "
-                            f"with args: [dim]{arguments}[/dim]"
+                                if not any(f"Trạng thái mục tiêu: `{current_state_key}`" in str(m.get("content", "")) for m in messages[-2:]):
+                                    messages.append({
+                                        "role": "user",
+                                        "content": rec_block
+                                    })
+                                    console.print(f"[dim cyan]🎯 Policy Engine: Gợi ý {len(recs)} công cụ tối ưu cho state [{current_state_key}][/dim cyan]")
+                        except Exception as e:
+                            logger.debug("Tactical policy recommendation error: %s", e)
+    
+                    try:
+                        call_kwargs = {
+                            "model": model,
+                            "messages": messages,
+                            "temperature": temperature,
+                            "response_format": {"type": "json_object"},  # OpenAI JSON mode
+                        }
+                        if extra_body:
+                            # Disable Qwen3.5 thinking mode via Ollama OpenAI-compatible API
+                            # reasoning_effort="none" is the correct parameter for /v1/ endpoint
+                            # (think=false only works with native /api/ endpoint)
+                            extra_body_with_think = {**extra_body, "reasoning_effort": "none"}
+                            call_kwargs["extra_body"] = extra_body_with_think
+    
+                        response = await asyncio.wait_for(
+                            client.chat.completions.create(**call_kwargs),
+                            timeout=180,
                         )
-
-                        findings_count_before = len(report_state.findings)
-                        open_ports_before = len(report_state.attack_surface.open_ports)
-                        endpoints_before = len(report_state.attack_surface.parameterized_endpoints)
-                        pre_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called) if tactical_policy else ""
-                        is_duplicate_call = (tools_called.count(tool_name) > 0)
-                        surface_count_before = (
-                            len(report_state.attack_surface.open_ports)
-                            + len(report_state.attack_surface.parameterized_endpoints)
-                            + len(report_state.attack_surface.login_forms)
-                            + len(report_state.attack_surface.detected_technologies)
-                            + len(report_state.attack_surface.subdomains)
-                            + len(report_state.attack_surface.alive_subdomains)
-                            + len(report_state.attack_surface.exposed_sensitive_files)
-                            + len(report_state.attack_surface.cors_issues)
-                        )
-
-                        # Tool call with retry logic and timing
-                        tool_start = time.time()
-                        result_str = await _retry_tool_call(
-                            session, tool_name, arguments,
-                            max_retries=retry_max, delay=retry_delay,
-                        )
-                        tool_duration = time.time() - tool_start
-
-                        console.print(f"[bold cyan]📥 Tool Output:[/bold cyan] {result_str}")
-
-                        # Determine tool status
-                        is_error = any(kw in result_str.lower() for kw in [
-                            "error", "failed", "timeout", "timed out",
-                            "connection refused", "exception"
-                        ])
-                        tool_status = "FAILED" if is_error else "SUCCESS"
-
-                        # Track and log
-                        step_counter += 1
-                        tools_called.append(tool_name)
-                        audit.log("tool_call", {
-                            "iteration": iteration,
-                            "tool": tool_name,
-                            "arguments": arguments,
-                            "result_snippet": result_str[:500],
-                            "duration": round(tool_duration, 2),
-                            "status": tool_status,
-                        })
-
-                        # ★ Attack Surface Graph Update & Intelligence Distillation
-                        report_state.update_attack_surface(tool_name, arguments, result_str)
-                        distilled_intel = _distill_tool_intelligence(tool_name, result_str)
-                        if distilled_intel.get("summary") and distilled_intel["summary"] != "Không có dấu hiệu đặc biệt.":
-                            console.print(f"[bold dim yellow]⚡ Distilled Intel:[/bold dim yellow] [dim]{distilled_intel['summary']}[/dim]")
-
-                        # RAG Memory: Ingest Recon Intelligence (Checkpoint 1 & 2)
-                        if vector_memory and tool_status == "SUCCESS" and distilled_intel.get("summary") and distilled_intel["summary"] != "Không có dấu hiệu đặc biệt.":
-                            try:
-                                port_val = distilled_intel.get("ports", [0])[0] if distilled_intel.get("ports") else 0
-                                vector_memory.store_target_recon(
-                                    target=target_raw_str,
-                                    port=port_val,
-                                    service="discovered",
-                                    summary=distilled_intel["summary"],
-                                    metadata={
-                                        "tool": tool_name,
-                                        "technologies": distilled_intel.get("technologies", []),
-                                        "cves": distilled_intel.get("cves", []),
-                                    }
-                                )
-                            except Exception:
-                                pass
-
-                        # ★ REAL-TIME REPORTER: Observe this tool result
-                        reporter_comment = ""
-                        feedback_block = ""
-                        if reporter_realtime and tool_name not in reporter_skip_tools:
+                        msg = response.choices[0].message
+                        finish_reason = response.choices[0].finish_reason
+                        response_content = msg.content or ""
+                        # If content is empty but reasoning exists, model was in thinking mode
+                        if not response_content.strip():
+                            reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None) or ""
+                            if reasoning:
+                                response_content = reasoning
+                        if finish_reason == "length":
+                            logger.warning("LLM output truncated (finish_reason=length) at iteration %d", iteration)
+    
+                        # Strip Qwen3.5 thinking mode <think>...</think> tags
+                        # These cause JSON extraction failures by emitting long
+                        # free-text reasoning before the actual JSON output.
+                        response_content_clean = _clean_thinking_tags(response_content)
+                        # If after stripping think tags there is usable content, prefer it
+                        if response_content_clean:
+                            response_content = response_content_clean
+                    except asyncio.TimeoutError:
+                        console.print("[bold red]⏱️ LLM call timed out after 180s. Retrying...[/bold red]")
+                        audit.log("llm_timeout", {"iteration": iteration})
+                        messages.append({"role": "user", "content": "System Notification: Previous request timed out. Please proceed with next step."})
+                        continue
+                    except Exception as llm_err:
+                        err_msg = str(llm_err).lower()
+                        if ("cuda" in err_msg or "ptx" in err_msg or "0xc0000409" in err_msg or "llama-server" in err_msg) and extra_body.get("options", {}).get("num_gpu") != 0:
+                            console.print("[bold yellow]⚡ Phát hiện lỗi CUDA/PTX JIT từ GPU driver — Tự động chuyển sang CPU an toàn (num_gpu=0)...[/bold yellow]")
+                            extra_body = {
+                                "options": {"num_gpu": 0, "num_predict": num_predict, "num_ctx": num_ctx},
+                                "keep_alive": keep_alive,
+                                "format": "json",
+                            }
+                            audit.log("gpu_fallback_cpu", {"iteration": iteration, "error": str(llm_err)})
+                            await asyncio.sleep(2)
+                            continue
+                        console.print(f"[bold red]❌ LLM Connection Error: {llm_err}[/bold red]")
+                        audit.log("llm_error", {"iteration": iteration, "error": str(llm_err)})
+                        await asyncio.sleep(3)
+                        messages.append({"role": "user", "content": f"System Alert: LLM connection error: {llm_err}. Please retry action."})
+                        continue
+                    console.print(f"[yellow]{response_content}[/yellow]")
+    
+                    # Append assistant response to history
+                    messages.append({"role": "assistant", "content": response_content})
+    
+                    # 6. BULLETPROOF JSON Extraction, Parsing, Tool Matching & Execution
+                    try:
+                        parsed_json = _extract_json(response_content)
+                        _consecutive_json_errors = 0  # Reset error budget on success
+    
+                        if not isinstance(parsed_json, dict):
+                            raise ValueError("JSON content must be an object/dictionary.")
+    
+                        action = parsed_json.get("action")
+                        if not action:
+                            raise ValueError("Missing required key 'action' in JSON block.")
+    
+                        # 7. Display Chain-of-Thought reasoning
+                        thought = parsed_json.get("thought")
+                        if thought:
                             console.print(
-                                f"[dim]🔍 Reporter đang phân tích kết quả {tool_name}...[/dim]"
-                            )
-                            reporter_result = await _invoke_reporter_realtime(
-                                client, report_state,
-                                tool_name, arguments, result_str, iteration,
-                                distilled_summary=distilled_intel.get("summary", ""),
-                            )
-
-                            if reporter_result:
-                                raw_findings = reporter_result.get("new_findings", [])
-                                filtered_findings = _filter_hallucinated_findings(
-                                    raw_findings, tool_name, result_str
+                                Panel(
+                                    f"[italic bright_white]{thought}[/italic bright_white]",
+                                    title="[bold magenta]🧠 Agent Reasoning (CoT)[/bold magenta]",
+                                    border_style="magenta",
                                 )
-                                # Process new findings
-                                new_findings = []
-                                for f_data in filtered_findings:
-                                    cve = (f_data.get("cve_id") or "").strip()
-                                    if not cve:
-                                        cve_match = _RE_CVE_PATTERN.search(f"{f_data.get('title', '')} {f_data.get('description', '')} {result_str}")
-                                        if cve_match:
-                                            cve = cve_match.group(1).upper()
-
-                                    finding = Finding(
-                                        title=f_data.get("title", "Untitled"),
-                                        severity=f_data.get("severity", "INFO"),
-                                        description=f_data.get("description", ""),
-                                        impact=f_data.get("impact", ""),
-                                        remediation=f_data.get("remediation", ""),
-                                        tool_source=tool_name,
-                                        raw_evidence=result_str[:1000],
-                                        cve_id=cve,
-                                        cvss_score=f_data.get("cvss_score"),
-                                    )
-                                    report_state.add_finding(finding)
-                                    new_findings.append(finding)
-
-                                # Update risk score (only on non-capability check)
-                                new_risk = reporter_result.get("risk_score", 0)
-                                if new_risk and (tool_name != "docker_bruteforce" and "capability_check_only" not in result_str):
-                                    report_state.update_risk_score(new_risk)
-
-                                # Get suggestion and comment
-                                suggestion = reporter_result.get("suggestion", "")
-                                reporter_comment = reporter_result.get("step_comment", "")
-                                obj_assessment = reporter_result.get("objective_assessment", "")
-                                blk_factor = reporter_result.get("blocking_factor", "")
-
-                                if suggestion:
-                                    report_state.add_suggestion(suggestion)
-
-                                # RAG Checkpoint: Store Context-Aware Attack Pattern if Reporter generated one
-                                if vector_memory:
-                                    pattern_data = reporter_result.get("attack_pattern", {})
-                                    if pattern_data and pattern_data.get("should_store"):
-                                        try:
-                                            p_meta = pattern_data.setdefault("metadata", {})
-                                            if not p_meta.get("tech_stack"):
-                                                p_meta["tech_stack"] = list(report_state.attack_surface.detected_technologies)[:5]
-                                            if not p_meta.get("waf"):
-                                                p_meta["waf"] = report_state.attack_surface.detected_waf.get("primary_waf", "")
-                                            stored_id = vector_memory.store_attack_pattern(pattern_data)
-                                            if stored_id:
-                                                report_state.record_rag_stored_pattern(pattern_data, stored_id)
-                                                console.print(f"[dim green]🧠 Sổ tay Red Team đã ghi nhớ kịch bản: {stored_id}[/dim green]")
-                                                audit.log("rag_attack_pattern_stored", {"id": stored_id, "tool": tool_name})
-                                        except Exception as e:
-                                            logger.debug("RAG attack pattern storage failed: %s", e)
-
-                                # Build and inject feedback into Red Teamer context
-                                feedback_block = report_state.get_reporter_feedback_block(
-                                    latest_suggestion=suggestion,
-                                    latest_comment=reporter_comment,
-                                    latest_findings=new_findings,
-                                    objective_assessment=obj_assessment,
-                                    blocking_factor=blk_factor,
+                            )
+    
+                        # 8. Tool Execution or Final Answer
+                        if action == "call_tool":
+                            tool_name = parsed_json.get("tool_name")
+                            # Auto-correct tool name typos
+                            tool_name = _fuzzy_match_tool_name(tool_name, tools_schema)
+                            arguments = parsed_json.get("arguments", {})
+                            if not isinstance(arguments, dict):
+                                arguments = {}
+                            # Auto-inject target when args are empty (from truncated JSON repair)
+                            if not arguments and report_state and report_state.target:
+                                target_url = report_state.target.rstrip("/")
+                                if tool_name in (
+                                    "docker_whatweb", "docker_crawl_web", "docker_nuclei_scan",
+                                    "docker_http_headers_audit", "docker_sensitive_files_scan",
+                                    "docker_security_txt_audit", "docker_api_docs_audit",
+                                    "docker_cors_scan", "docker_nikto_scan",
+                                ):
+                                    arguments = {"target_url": target_url}
+                                elif tool_name in ("docker_testssl",):
+                                    arguments = {"target_host": target_url}
+                                elif tool_name in ("docker_httpx_probe",):
+                                    arguments = {"targets": target_url}
+                                elif tool_name in ("docker_subfinder", "docker_subdomain_takeover_audit"):
+                                    from urllib.parse import urlparse
+                                    domain = urlparse(target_url).hostname or target_url
+                                    arguments = {"domain": domain}
+                                elif tool_name in ("docker_resolve_dns",):
+                                    from urllib.parse import urlparse
+                                    domain = urlparse(target_url).hostname or target_url
+                                    arguments = {"hostname": domain}
+                                else:
+                                    arguments = {"target": target_url}
+                                logger.info("Auto-injected target into empty args for %s", tool_name)
+                            # Auto-correct argument names BEFORE anti-loop check
+                            arguments = _normalize_tool_args(tool_name, arguments, tools_schema)
+    
+                            # ANTI-LOOP ENFORCEMENT: block duplicate tool+args calls
+                            call_sig = f"{tool_name}::{json.dumps(arguments, sort_keys=True)}"
+                            semantic_sig = _get_semantic_signature(tool_name, arguments)
+                            if call_sig in _call_signatures or semantic_sig in _semantic_signatures:
+                                dup_msg = (
+                                    f"SYSTEM BLOCK: You already called '{tool_name}' with these arguments "
+                                    f"(or an equivalent target like www vs non-www). "
+                                    "This is a DUPLICATE/REDUNDANT call and has been BLOCKED. "
+                                    "You MUST use a DIFFERENT tool or explore a DIFFERENT attack vector. "
+                                    "If you have exhausted all viable attack vectors, output 'final_answer' immediately."
                                 )
-
+                                console.print(f"[bold red]🔁 DUPLICATE BLOCKED: {tool_name}[/bold red]")
+                                messages.append({"role": "user", "content": dup_msg})
+                                audit.log("duplicate_blocked", {"tool": tool_name, "args": arguments})
+                                continue
+                            _call_signatures.add(call_sig)
+                            _semantic_signatures.add(semantic_sig)
+    
+                            # Human-in-the-Loop gate for destructive tools
+                            if hitl_enabled and tool_name in destructive_tools:
                                 console.print(
-                                    Panel(
-                                        f"[italic cyan]{feedback_block}[/italic cyan]",
-                                        title="[bold cyan]📊 SOC Analyst Feedback[/bold cyan]",
-                                        border_style="cyan",
-                                    )
+                                    f"\n[bold red]⚠️  CẢNH BÁO: AI Agent muốn kích hoạt: {tool_name}[/bold red]"
                                 )
-
-                                audit.log("reporter_realtime", {
-                                    "iteration": iteration,
-                                    "new_findings": len(new_findings),
-                                    "risk_score": report_state.risk_score,
-                                    "suggestion": suggestion[:200],
-                                })
-
-                        # Record step in ReportState
-                        step = ToolStep(
-                            step_number=step_counter,
-                            tool_name=tool_name,
-                            arguments=arguments,
-                            result_snippet=result_str[:1000],
-                            status=tool_status,
-                            duration_seconds=round(tool_duration, 2),
-                            reporter_comment=reporter_comment,
-                        )
-                        report_state.add_step(step)
-
-                        # Tactical Policy Engine: Reinforcement Learning Reward & Q-update
-                        if tactical_policy and pre_state_key:
-                            try:
-                                diff_findings = max(0, len(report_state.findings) - findings_count_before)
-                                new_sevs = [f.severity for f in report_state.findings[-diff_findings:]] if diff_findings > 0 else []
-                                new_ports = max(0, len(report_state.attack_surface.open_ports) - open_ports_before)
-                                new_endpoints = max(0, len(report_state.attack_surface.parameterized_endpoints) - endpoints_before)
-
-                                # Extract qualitative semantic reward from Qwen Reporter's assessment
-                                semantic_rew = extract_semantic_reward(
-                                    reporter_result=reporter_result if reporter_realtime else None,
+                                console.print(
+                                    f"[dim]Mục tiêu:[/dim] {arguments}"
+                                )
+                                approval = Prompt.ask(
+                                    "[bold red]Cho phép không?[/bold red] (Y/N)"
+                                )
+                                if approval.strip().lower() != "y":
+                                    console.print(
+                                        "[bold yellow]❌ Operator từ chối. Bỏ qua lệnh này.[/bold yellow]"
+                                    )
+                                    messages.append(
+                                        {
+                                            "role": "user",
+                                            "content": (
+                                                "System Alert: Operator denied permission to run "
+                                                f"'{tool_name}'. Try a different approach or tool."
+                                            ),
+                                        }
+                                    )
+                                    audit.log("tool_denied", {"tool": tool_name, "args": arguments})
+                                    continue
+    
+                            console.print(
+                                f"[bold cyan]🔧 Calling Tool:[/bold cyan] [cyan]{tool_name}[/cyan] "
+                                f"with args: [dim]{arguments}[/dim]"
+                            )
+    
+                            findings_count_before = len(report_state.findings)
+                            open_ports_before = len(report_state.attack_surface.open_ports)
+                            endpoints_before = len(report_state.attack_surface.parameterized_endpoints)
+                            pre_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called) if tactical_policy else ""
+                            is_duplicate_call = (tools_called.count(tool_name) > 0)
+                            surface_count_before = (
+                                len(report_state.attack_surface.open_ports)
+                                + len(report_state.attack_surface.parameterized_endpoints)
+                                + len(report_state.attack_surface.login_forms)
+                                + len(report_state.attack_surface.detected_technologies)
+                                + len(report_state.attack_surface.subdomains)
+                                + len(report_state.attack_surface.alive_subdomains)
+                                + len(report_state.attack_surface.exposed_sensitive_files)
+                                + len(report_state.attack_surface.cors_issues)
+                            )
+    
+                            # Tool call with retry logic and timing
+                            tool_start = time.time()
+                            result_str = await _retry_tool_call(
+                                session, tool_name, arguments,
+                                max_retries=retry_max, delay=retry_delay,
+                            )
+                            tool_duration = time.time() - tool_start
+    
+                            console.print(f"[bold cyan]📥 Tool Output:[/bold cyan] {result_str}")
+    
+                            # Determine tool status
+                            is_error = any(kw in result_str.lower() for kw in [
+                                "error", "failed", "timeout", "timed out",
+                                "connection refused", "exception"
+                            ])
+                            tool_status = "FAILED" if is_error else "SUCCESS"
+    
+                            # Track and log
+                            step_counter += 1
+                            tools_called.append(tool_name)
+                            audit.log("tool_call", {
+                                "iteration": iteration,
+                                "tool": tool_name,
+                                "arguments": arguments,
+                                "result_snippet": result_str[:500],
+                                "duration": round(tool_duration, 2),
+                                "status": tool_status,
+                            })
+    
+                            # ★ Attack Surface Graph Update & Intelligence Distillation
+                            report_state.update_attack_surface(tool_name, arguments, result_str)
+                            distilled_intel = _distill_tool_intelligence(tool_name, result_str)
+                            if distilled_intel.get("summary") and distilled_intel["summary"] != "Không có dấu hiệu đặc biệt.":
+                                console.print(f"[bold dim yellow]⚡ Distilled Intel:[/bold dim yellow] [dim]{distilled_intel['summary']}[/dim]")
+    
+                            # RAG Memory: Ingest Recon Intelligence (Checkpoint 1 & 2)
+                            if vector_memory and tool_status == "SUCCESS" and distilled_intel.get("summary") and distilled_intel["summary"] != "Không có dấu hiệu đặc biệt.":
+                                try:
+                                    port_val = distilled_intel.get("ports", [0])[0] if distilled_intel.get("ports") else 0
+                                    vector_memory.store_target_recon(
+                                        target=target_raw_str,
+                                        port=port_val,
+                                        service="discovered",
+                                        summary=distilled_intel["summary"],
+                                        metadata={
+                                            "tool": tool_name,
+                                            "technologies": distilled_intel.get("technologies", []),
+                                            "cves": distilled_intel.get("cves", []),
+                                        }
+                                    )
+                                except Exception:
+                                    pass
+    
+                            # ★ REAL-TIME REPORTER: Observe this tool result
+                            reporter_comment = ""
+                            feedback_block = ""
+                            if reporter_realtime and tool_name not in reporter_skip_tools:
+                                console.print(
+                                    f"[dim]🔍 Reporter đang phân tích kết quả {tool_name}...[/dim]"
+                                )
+                                reporter_result = await _invoke_reporter_realtime(
+                                    client, report_state,
+                                    tool_name, arguments, result_str, iteration,
                                     distilled_summary=distilled_intel.get("summary", ""),
                                 )
-
-                                reward = tactical_policy.reward_engine.compute_reward(
-                                    tool_name=tool_name,
-                                    pre_findings_count=findings_count_before,
-                                    post_findings_count=len(report_state.findings),
-                                    new_severities=new_sevs,
-                                    new_ports_discovered=new_ports,
-                                    new_endpoints_discovered=new_endpoints,
-                                    tool_status=tool_status,
-                                    is_duplicate_call=is_duplicate_call,
-                                    semantic_boost=semantic_rew,
-                                )
-                                post_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
-                                prev_tool = tools_called[-2] if len(tools_called) >= 2 else None
-                                new_q = tactical_policy.record_outcome(
-                                    state_key=pre_state_key,
-                                    action=tool_name,
-                                    reward=reward,
-                                    next_state_key=post_state_key,
-                                    previous_action=prev_tool,
-                                )
-                                color = "green" if reward > 0 else ("red" if reward < 0 else "dim")
-                                console.print(
-                                    f"[dim {color}]🎯 Policy Q-Update: {tool_name} → R={reward:+.1f} | Q={new_q:.2f} (Updates: {tactical_policy.total_updates})[/dim {color}]"
-                                )
-                                audit.log("tactical_policy_update", {
-                                    "state": pre_state_key,
-                                    "action": tool_name,
-                                    "reward": reward,
-                                    "q_value": new_q,
-                                    "next_state": post_state_key,
-                                })
-                            except Exception as e:
-                                logger.debug("Tactical policy update error: %s", e)
-
-                        # Check for adaptive tactical pivot
-                        pivot_info = _resolve_tactical_pivot(tool_name, result_str, report_state)
-                        if pivot_info:
-                            console.print(f"[bold magenta]🔄 Adaptive Tactical Pivot: {pivot_info['obstacle']} → Đề xuất '{pivot_info['pivot_tool']}'[/bold magenta]")
-                            audit.log("tactical_pivot_triggered", {
-                                "iteration": iteration,
-                                "obstacle": pivot_info["obstacle"],
-                                "pivot_tool": pivot_info["pivot_tool"],
-                                "reason": pivot_info["reason"],
-                            })
-                            report_state.add_suggestion(f"Chuyển hướng chiến thuật sang '{pivot_info['pivot_tool']}': {pivot_info['reason']}")
-
-                        # Stagnation tracking & convergence check (Surface Expansion Aware)
-                        findings_count_after = len(report_state.findings)
-                        surface_count_after = (
-                            len(report_state.attack_surface.open_ports)
-                            + len(report_state.attack_surface.parameterized_endpoints)
-                            + len(report_state.attack_surface.login_forms)
-                            + len(report_state.attack_surface.detected_technologies)
-                            + len(report_state.attack_surface.subdomains)
-                            + len(report_state.attack_surface.alive_subdomains)
-                            + len(report_state.attack_surface.exposed_sensitive_files)
-                            + len(report_state.attack_surface.cors_issues)
-                            + len(report_state.attack_surface.hidden_discovered_paths)
-                            + len(report_state.attack_surface.cookie_issues)
-                        )
-
-                        if findings_count_after > findings_count_before or surface_count_after > surface_count_before:
-                            _stagnation_counter = 0
-                        else:
-                            _stagnation_counter += 1
-                            console.print(
-                                f"[dim]⚡ Stagnation counter: {_stagnation_counter}/{stagnation_max_thresh}[/dim]"
-                            )
-
-                        # Forced convergence if stagnation limit reached
-                        if _stagnation_counter >= stagnation_max_thresh:
-                            roadmap = report_state.get_tactical_roadmap()
-                            high_priority_untried = [a for a in roadmap.get("top_actions", []) if a.get("priority") in ("CRITICAL", "HIGH")]
-                            if relentless_pursuit and high_priority_untried and _stagnation_rescues < stagnation_max_rescues and iteration < max_iterations - 2:
-                                _stagnation_rescues += 1
-                                _stagnation_counter = 0
-                                best_rescue_action = high_priority_untried[0]
-                                console.print(
-                                    f"[bold red]🔥 Relentless Pursuit Active ({_stagnation_rescues}/{stagnation_max_rescues}): Ngăn chặn dừng sớm khi còn hành động {best_rescue_action['priority']}. Ép buộc thử '{best_rescue_action['action']}'.[/bold red]"
-                                )
-                                audit.log("relentless_stagnation_rescue", {
-                                    "iteration": iteration,
-                                    "rescue_attempt": _stagnation_rescues,
-                                    "enforced_action": best_rescue_action,
-                                })
-                                rescue_notice = (
-                                    f"\n\n[🔥 CHẾ ĐỘ NỖ LỰC CỰC ĐOAN (RELENTLESS PURSUIT) — TỪ CHỐI ĐẦU HÀNG]\n"
-                                    f"Cảnh báo: Đã có {stagnation_max_thresh} bước không mở rộng thêm bề mặt. "
-                                    f"TUY NHIÊN, lộ trình chiến thuật vẫn còn hành động mức ưu tiên {best_rescue_action['priority']}:\n"
-                                    f"  → Công cụ: '{best_rescue_action['action']}'\n"
-                                    f"  → Lý do: {best_rescue_action['recommendation']}\n"
-                                    f"Hội đồng Chiến thuật YÊU CẦU Red Teamer thực thi ngay công cụ trên để vét cạn bề mặt trước khi kết thúc!"
-                                )
-
-                                # RAG Checkpoint: Recall past breakthroughs for stagnation rescue
-                                if vector_memory:
-                                    try:
-                                        rescue_query = f"bypass alternative vector stagnation {' '.join(report_state.attack_surface.detected_technologies)}"
-                                        rescue_patterns = vector_memory.recall_attack_patterns(
-                                            query=rescue_query,
-                                            tech_stack=list(report_state.attack_surface.detected_technologies) or None,
-                                            top_k=2,
-                                            min_similarity=0.55,
-                                            enable_rerank=True,
-                                        )
-                                        if rescue_patterns:
-                                            rag_rescue_block = vector_memory.format_past_experience_block(rescue_patterns, max_tokens=400)
-                                            rescue_notice += f"\n\n{rag_rescue_block}"
-                                            report_state.record_rag_applied_patterns(rescue_patterns)
-                                    except Exception:
-                                        pass
-                                truncated_result = _truncate_tool_output_for_llm(result_str)
-                                tool_msg = f"Tool '{tool_name}' result: {truncated_result}"
-                                if feedback_block:
-                                    tool_msg += f"\n\n{feedback_block}"
-                                if pivot_info:
-                                    tool_msg += (
-                                        f"\n\n[🔄 TỰ ĐỘNG CHUYỂN HƯỚNG CHIẾN THUẬT (ADAPTIVE PIVOT)]\n"
-                                        f"Phát hiện vật cản: {pivot_info['obstacle']}.\n"
-                                        f"Lệnh chuyển hướng: Gọi ngay công cụ '{pivot_info['pivot_tool']}'.\n"
-                                        f"Lý do: {pivot_info['reason']}\n"
-                                        f"HÃY THI HÀNH CÔNG CỤ NÀY Ở BƯỚC KẾ TIẾP!"
+    
+                                if reporter_result:
+                                    raw_findings = reporter_result.get("new_findings", [])
+                                    filtered_findings = _filter_hallucinated_findings(
+                                        raw_findings, tool_name, result_str
                                     )
-                                tool_msg += rescue_notice
-                                messages.append({"role": "user", "content": tool_msg})
+                                    # Process new findings
+                                    new_findings = []
+                                    for f_data in filtered_findings:
+                                        cve = (f_data.get("cve_id") or "").strip()
+                                        if not cve:
+                                            cve_match = _RE_CVE_PATTERN.search(f"{f_data.get('title', '')} {f_data.get('description', '')} {result_str}")
+                                            if cve_match:
+                                                cve = cve_match.group(1).upper()
+    
+                                        finding = Finding(
+                                            title=f_data.get("title", "Untitled"),
+                                            severity=f_data.get("severity", "INFO"),
+                                            description=f_data.get("description", ""),
+                                            impact=f_data.get("impact", ""),
+                                            remediation=f_data.get("remediation", ""),
+                                            tool_source=tool_name,
+                                            raw_evidence=result_str[:1000],
+                                            cve_id=cve,
+                                            cvss_score=f_data.get("cvss_score"),
+                                        )
+                                        report_state.add_finding(finding)
+                                        new_findings.append(finding)
+    
+                                    # Update risk score (only on non-capability check)
+                                    new_risk = reporter_result.get("risk_score", 0)
+                                    if new_risk and (tool_name != "docker_bruteforce" and "capability_check_only" not in result_str):
+                                        report_state.update_risk_score(new_risk)
+    
+                                    # Get suggestion and comment
+                                    suggestion = reporter_result.get("suggestion", "")
+                                    reporter_comment = reporter_result.get("step_comment", "")
+                                    obj_assessment = reporter_result.get("objective_assessment", "")
+                                    blk_factor = reporter_result.get("blocking_factor", "")
+    
+                                    if suggestion:
+                                        report_state.add_suggestion(suggestion)
+    
+                                    # RAG Checkpoint: Store Context-Aware Attack Pattern if Reporter generated one
+                                    if vector_memory:
+                                        pattern_data = reporter_result.get("attack_pattern", {})
+                                        if pattern_data and pattern_data.get("should_store"):
+                                            try:
+                                                p_meta = pattern_data.setdefault("metadata", {})
+                                                if not p_meta.get("tech_stack"):
+                                                    p_meta["tech_stack"] = list(report_state.attack_surface.detected_technologies)[:5]
+                                                if not p_meta.get("waf"):
+                                                    p_meta["waf"] = report_state.attack_surface.detected_waf.get("primary_waf", "")
+                                                stored_id = vector_memory.store_attack_pattern(pattern_data)
+                                                if stored_id:
+                                                    report_state.record_rag_stored_pattern(pattern_data, stored_id)
+                                                    console.print(f"[dim green]🧠 Sổ tay Red Team đã ghi nhớ kịch bản: {stored_id}[/dim green]")
+                                                    audit.log("rag_attack_pattern_stored", {"id": stored_id, "tool": tool_name})
+                                            except Exception as e:
+                                                logger.debug("RAG attack pattern storage failed: %s", e)
+    
+                                    # Build and inject feedback into Red Teamer context
+                                    feedback_block = report_state.get_reporter_feedback_block(
+                                        latest_suggestion=suggestion,
+                                        latest_comment=reporter_comment,
+                                        latest_findings=new_findings,
+                                        objective_assessment=obj_assessment,
+                                        blocking_factor=blk_factor,
+                                    )
+    
+                                    console.print(
+                                        Panel(
+                                            f"[italic cyan]{feedback_block}[/italic cyan]",
+                                            title="[bold cyan]📊 SOC Analyst Feedback[/bold cyan]",
+                                            border_style="cyan",
+                                        )
+                                    )
+    
+                                    audit.log("reporter_realtime", {
+                                        "iteration": iteration,
+                                        "new_findings": len(new_findings),
+                                        "risk_score": report_state.risk_score,
+                                        "suggestion": suggestion[:200],
+                                    })
+    
+                            # Record step in ReportState
+                            step = ToolStep(
+                                step_number=step_counter,
+                                tool_name=tool_name,
+                                arguments=arguments,
+                                result_snippet=result_str[:1000],
+                                status=tool_status,
+                                duration_seconds=round(tool_duration, 2),
+                                reporter_comment=reporter_comment,
+                            )
+                            report_state.add_step(step)
+    
+                            # Tactical Policy Engine: Reinforcement Learning Reward & Q-update
+                            if tactical_policy and pre_state_key:
+                                try:
+                                    diff_findings = max(0, len(report_state.findings) - findings_count_before)
+                                    new_sevs = [f.severity for f in report_state.findings[-diff_findings:]] if diff_findings > 0 else []
+                                    new_ports = max(0, len(report_state.attack_surface.open_ports) - open_ports_before)
+                                    new_endpoints = max(0, len(report_state.attack_surface.parameterized_endpoints) - endpoints_before)
+    
+                                    # Extract qualitative semantic reward from Qwen Reporter's assessment
+                                    semantic_rew = extract_semantic_reward(
+                                        reporter_result=reporter_result if reporter_realtime else None,
+                                        distilled_summary=distilled_intel.get("summary", ""),
+                                    )
+    
+                                    reward = tactical_policy.reward_engine.compute_reward(
+                                        tool_name=tool_name,
+                                        pre_findings_count=findings_count_before,
+                                        post_findings_count=len(report_state.findings),
+                                        new_severities=new_sevs,
+                                        new_ports_discovered=new_ports,
+                                        new_endpoints_discovered=new_endpoints,
+                                        tool_status=tool_status,
+                                        is_duplicate_call=is_duplicate_call,
+                                        semantic_boost=semantic_rew,
+                                    )
+                                    post_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
+                                    prev_tool = tools_called[-2] if len(tools_called) >= 2 else None
+                                    new_q = tactical_policy.record_outcome(
+                                        state_key=pre_state_key,
+                                        action=tool_name,
+                                        reward=reward,
+                                        next_state_key=post_state_key,
+                                        previous_action=prev_tool,
+                                    )
+                                    color = "green" if reward > 0 else ("red" if reward < 0 else "dim")
+                                    console.print(
+                                        f"[dim {color}]🎯 Policy Q-Update: {tool_name} → R={reward:+.1f} | Q={new_q:.2f} (Updates: {tactical_policy.total_updates})[/dim {color}]"
+                                    )
+                                    audit.log("tactical_policy_update", {
+                                        "state": pre_state_key,
+                                        "action": tool_name,
+                                        "reward": reward,
+                                        "q_value": new_q,
+                                        "next_state": post_state_key,
+                                    })
+                                except Exception as e:
+                                    logger.debug("Tactical policy update error: %s", e)
+    
+                            # Check for adaptive tactical pivot
+                            pivot_info = _resolve_tactical_pivot(tool_name, result_str, report_state)
+                            if pivot_info:
+                                console.print(f"[bold magenta]🔄 Adaptive Tactical Pivot: {pivot_info['obstacle']} → Đề xuất '{pivot_info['pivot_tool']}'[/bold magenta]")
+                                audit.log("tactical_pivot_triggered", {
+                                    "iteration": iteration,
+                                    "obstacle": pivot_info["obstacle"],
+                                    "pivot_tool": pivot_info["pivot_tool"],
+                                    "reason": pivot_info["reason"],
+                                })
+                                report_state.add_suggestion(f"Chuyển hướng chiến thuật sang '{pivot_info['pivot_tool']}': {pivot_info['reason']}")
+    
+                            # Stagnation tracking & convergence check (Surface Expansion Aware)
+                            findings_count_after = len(report_state.findings)
+                            surface_count_after = (
+                                len(report_state.attack_surface.open_ports)
+                                + len(report_state.attack_surface.parameterized_endpoints)
+                                + len(report_state.attack_surface.login_forms)
+                                + len(report_state.attack_surface.detected_technologies)
+                                + len(report_state.attack_surface.subdomains)
+                                + len(report_state.attack_surface.alive_subdomains)
+                                + len(report_state.attack_surface.exposed_sensitive_files)
+                                + len(report_state.attack_surface.cors_issues)
+                                + len(report_state.attack_surface.hidden_discovered_paths)
+                                + len(report_state.attack_surface.cookie_issues)
+                            )
+    
+                            if findings_count_after > findings_count_before or surface_count_after > surface_count_before:
+                                _stagnation_counter = 0
+                            else:
+                                _stagnation_counter += 1
+                                console.print(
+                                    f"[dim]⚡ Stagnation counter: {_stagnation_counter}/{stagnation_max_thresh}[/dim]"
+                                )
+    
+                            # Forced convergence if stagnation limit reached
+                            if _stagnation_counter >= stagnation_max_thresh:
+                                roadmap = report_state.get_tactical_roadmap()
+                                high_priority_untried = [a for a in roadmap.get("top_actions", []) if a.get("priority") in ("CRITICAL", "HIGH")]
+                                if relentless_pursuit and high_priority_untried and _stagnation_rescues < stagnation_max_rescues and iteration < max_iterations - 2:
+                                    _stagnation_rescues += 1
+                                    _stagnation_counter = 0
+                                    best_rescue_action = high_priority_untried[0]
+                                    console.print(
+                                        f"[bold red]🔥 Relentless Pursuit Active ({_stagnation_rescues}/{stagnation_max_rescues}): Ngăn chặn dừng sớm khi còn hành động {best_rescue_action['priority']}. Ép buộc thử '{best_rescue_action['action']}'.[/bold red]"
+                                    )
+                                    audit.log("relentless_stagnation_rescue", {
+                                        "iteration": iteration,
+                                        "rescue_attempt": _stagnation_rescues,
+                                        "enforced_action": best_rescue_action,
+                                    })
+                                    rescue_notice = (
+                                        f"\n\n[🔥 CHẾ ĐỘ NỖ LỰC CỰC ĐOAN (RELENTLESS PURSUIT) — TỪ CHỐI ĐẦU HÀNG]\n"
+                                        f"Cảnh báo: Đã có {stagnation_max_thresh} bước không mở rộng thêm bề mặt. "
+                                        f"TUY NHIÊN, lộ trình chiến thuật vẫn còn hành động mức ưu tiên {best_rescue_action['priority']}:\n"
+                                        f"  → Công cụ: '{best_rescue_action['action']}'\n"
+                                        f"  → Lý do: {best_rescue_action['recommendation']}\n"
+                                        f"Hội đồng Chiến thuật YÊU CẦU Red Teamer thực thi ngay công cụ trên để vét cạn bề mặt trước khi kết thúc!"
+                                    )
+    
+                                    # RAG Checkpoint: Recall past breakthroughs for stagnation rescue
+                                    if vector_memory:
+                                        try:
+                                            rescue_query = f"bypass alternative vector stagnation {' '.join(report_state.attack_surface.detected_technologies)}"
+                                            rescue_patterns = vector_memory.recall_attack_patterns(
+                                                query=rescue_query,
+                                                tech_stack=list(report_state.attack_surface.detected_technologies) or None,
+                                                top_k=2,
+                                                min_similarity=0.55,
+                                                enable_rerank=True,
+                                            )
+                                            if rescue_patterns:
+                                                rag_rescue_block = vector_memory.format_past_experience_block(rescue_patterns, max_tokens=400)
+                                                rescue_notice += f"\n\n{rag_rescue_block}"
+                                                report_state.record_rag_applied_patterns(rescue_patterns)
+                                        except Exception:
+                                            pass
+                                    truncated_result = _truncate_tool_output_for_llm(result_str)
+                                    tool_msg = f"Tool '{tool_name}' result: {truncated_result}"
+                                    if feedback_block:
+                                        tool_msg += f"\n\n{feedback_block}"
+                                    if pivot_info:
+                                        tool_msg += (
+                                            f"\n\n[🔄 TỰ ĐỘNG CHUYỂN HƯỚNG CHIẾN THUẬT (ADAPTIVE PIVOT)]\n"
+                                            f"Phát hiện vật cản: {pivot_info['obstacle']}.\n"
+                                            f"Lệnh chuyển hướng: Gọi ngay công cụ '{pivot_info['pivot_tool']}'.\n"
+                                            f"Lý do: {pivot_info['reason']}\n"
+                                            f"HÃY THI HÀNH CÔNG CỤ NÀY Ở BƯỚC KẾ TIẾP!"
+                                        )
+                                    tool_msg += rescue_notice
+                                    messages.append({"role": "user", "content": tool_msg})
+                                    continue
+    
+                                console.print(
+                                    f"\n[bold red]🛑 STAGNATION LIMIT REACHED ({_stagnation_counter} consecutive steps without new findings).[/bold red]"
+                                )
+                                console.print(
+                                    "[bold yellow]Auto-converging assessment to generate final report...[/bold yellow]"
+                                )
+                                audit.log("stagnation_forced_finalize", {
+                                    "iteration": iteration,
+                                    "stagnation_steps": _stagnation_counter,
+                                    "tools_called": len(tools_called),
+                                    "findings_count": len(report_state.findings),
+                                })
+                                forced_summary = (
+                                    f"Đánh giá an ninh đã hoàn thành sau {iteration} bước thực thi. "
+                                    f"Mục tiêu đã được rà soát qua {len(set(tools_called))} công cụ khác nhau. "
+                                    f"Trong {_stagnation_counter} bước gần nhất không phát hiện thêm bề mặt tấn công hoặc lỗ hổng mới. "
+                                    f"Tổng cộng đã xác nhận {len(report_state.findings)} phát hiện với điểm rủi ro {report_state.risk_score}/10."
+                                )
+                                report_state.total_iterations = iteration
+                                report_state.finalize(red_teamer_answer=forced_summary)
+    
+                                # Final polish pass by Reporter
+                                console.print("\n[bold yellow][*] Reporter — Final Polish...[/bold yellow]")
+                                await _reporter_final_polish(client, report_state)
+    
+                                audit.log("reporter_final_polish", {
+                                    "findings_count": len(report_state.findings),
+                                    "risk_score": report_state.risk_score,
+                                })
+    
+                                # Cold Ingest Full Assessment Playbook into Vector DB
+                                _cold_ingest_assessment_playbook(vector_memory, report_state, vectordb_cfg)
+    
+                                # Persist Tactical Policy learned knowledge
+                                if tactical_policy:
+                                    tactical_policy.save_policy()
+                                    console.print(
+                                        f"[dim green]💾 Tactical Policy: Đã lưu {len(tactical_policy.q_table)} trạng thái "
+                                        f"và {tactical_policy.total_updates} cập nhật vào đĩa.[/dim green]"
+                                    )
+    
+                                # Generate Multi-Format Reports (DOCX, Markdown, JSON)
+                                report_path = _export_all_reports(report_state, audit.path, target_raw_str)
+                                console.print(f"[bold green][+] Audit Trail: {audit.path}[/bold green]\n")
+    
+                                # Display final summary
+                                severity_counts = report_state.get_severity_counts()
+                                summary_table = Table(
+                                    title="📊 Assessment Summary (Stagnation Converged)",
+                                    border_style="cyan",
+                                )
+                                summary_table.add_column("Metric", style="cyan")
+                                summary_table.add_column("Value", style="bold")
+                                summary_table.add_row("Target", target_raw)
+                                summary_table.add_row("Risk Score", f"{report_state.risk_score}/10 ({report_state.get_overall_risk_label()})")
+                                summary_table.add_row("Total Findings", str(len(report_state.findings)))
+                                summary_table.add_row("CRITICAL", str(severity_counts["CRITICAL"]))
+                                summary_table.add_row("HIGH", str(severity_counts["HIGH"]))
+                                summary_table.add_row("MEDIUM", str(severity_counts["MEDIUM"]))
+                                summary_table.add_row("LOW", str(severity_counts["LOW"]))
+                                summary_table.add_row("Tools Used", str(len(tools_called)))
+                                summary_table.add_row("Iterations", str(iteration))
+                                try:
+                                    crit = report_state.generate_attack_graph().get_critical_path()
+                                    if crit:
+                                        summary_table.add_row("Critical Path", crit.to_summary())
+                                except Exception:
+                                    pass
+                                console.print(summary_table)
+    
+                                audit.log("session_end", {
+                                    "total_iterations": iteration,
+                                    "tools_called": tools_called,
+                                    "findings_count": len(report_state.findings),
+                                    "risk_score": report_state.risk_score,
+                                    "forced_stagnation": True,
+                                })
+                                audit.close()
+                                return report_state.executive_summary or forced_summary
+    
+                            # Build message for Red Teamer (tool result + optional reporter feedback)
+                            truncated_result = _truncate_tool_output_for_llm(result_str)
+                            tool_msg = f"Tool '{tool_name}' result: {truncated_result}"
+                            if feedback_block:
+                                tool_msg += f"\n\n{feedback_block}"
+                            if pivot_info:
+                                tool_msg += (
+                                    f"\n\n[🔄 TỰ ĐỘNG CHUYỂN HƯỚNG CHIẾN THUẬT (ADAPTIVE PIVOT)]\n"
+                                    f"Phát hiện vật cản: {pivot_info['obstacle']}.\n"
+                                    f"Lệnh chuyển hướng: Gọi ngay công cụ '{pivot_info['pivot_tool']}'.\n"
+                                    f"Lý do: {pivot_info['reason']}\n"
+                                    f"HÃY THI HÀNH CÔNG CỤ NÀY Ở BƯỚC KẾ TIẾP!"
+                                )
+                            if _stagnation_counter >= stagnation_warning_thresh:
+                                roadmap = report_state.get_tactical_roadmap()
+                                top_untried = [a for a in roadmap.get("top_actions", []) if a.get("priority") in ("CRITICAL", "HIGH")]
+                                pivot_advice = ""
+                                if top_untried:
+                                    pivot_advice = f"\n🎯 ĐỔI HƯỚNG CHIẾN THUẬT NGAY: Chuyển sang công cụ '{top_untried[0]['action']}' ({top_untried[0]['recommendation']})."
+                                tool_msg += (
+                                    f"\n\n[⚠️ SYSTEM ALERT — STAGNATION DETECTED ({_stagnation_counter}/{stagnation_max_thresh})]\n"
+                                    "Các bước vừa qua không phát hiện thêm bề mặt tấn công hay lỗ hổng mới. "
+                                    "TUYỆT ĐỐI KHÔNG lặp lại công cụ hoặc quét lại mục tiêu cũ. "
+                                    f"{pivot_advice}\n"
+                                    "Nếu toàn bộ bề mặt tấn công và các vector chiến thuật khả thi đã được thử nghiệm hết, hãy xuất 'final_answer'."
+                                )
+                                console.print(
+                                    f"[bold yellow]⚠️ Stagnation Warning ({_stagnation_counter}/{stagnation_max_thresh}): Cung cấp gợi ý đổi hướng chiến thuật[/bold yellow]"
+                                )
+    
+                            messages.append({"role": "user", "content": tool_msg})
+                            continue
+    
+                        elif action == "final_answer":
+                            final_text = parsed_json.get("text", "No final answer provided.")
+    
+                            # ★ MISSION COMPLETENESS GUARD & TARGETED OBJECTIVE VERIFICATION:
+                            # Prevent premature final_answer if critical mission vectors remain untested
+                            roadmap = report_state.get_tactical_roadmap()
+                            progress_pct = roadmap.get("progress_percentage", 100)
+                            untapped_actions = [a for a in roadmap.get("top_actions", []) if a.get("priority") in ("CRITICAL", "HIGH")]
+    
+                            # Check if user's explicit objective has unfulfilled direct requirements
+                            should_guard, unfulfilled_objective_vectors = _evaluate_mission_guard(
+                                report_state=report_state,
+                                tools_called=tools_called,
+                                progress_pct=progress_pct,
+                                untapped_actions=untapped_actions,
+                                iteration=iteration,
+                                max_iterations=max_iterations,
+                                guard_attempts=_mission_guard_attempts,
+                                relentless_pursuit=relentless_pursuit,
+                                max_guard_attempts=max_guard_challenges,
+                            )
+    
+                            if should_guard:
+                                _mission_guard_attempts += 1
+                                reasons = []
+                                if unfulfilled_objective_vectors:
+                                    reasons.extend([f"  - 🎯 {v}" for v in unfulfilled_objective_vectors])
+                                if untapped_actions:
+                                    reasons.extend([
+                                        f"  - [Ưu tiên {a['priority']}] {a['recommendation']} (Ví dụ công cụ: '{a['action']}')"
+                                        for a in untapped_actions[:2]
+                                    ])
+                                reasons_str = "\n".join(reasons)
+                                guard_prompt = (
+                                    f"[⚠️ HỘI ĐỒNG CHIẾN THUẬT CẢNH BÁO — CHƯA ĐẠT MỤC TIÊU TỐI TÂN]\n"
+                                    f"Mục tiêu của người dùng: '{report_state.mission_objective or report_state.target_objective}'.\n"
+                                    f"Tiến độ hoàn thành mục tiêu ước tính: {progress_pct}%.\n"
+                                    f"Vẫn còn các nhiệm vụ trọng tâm của sứ mệnh CHƯA ĐƯỢC THỰC HIỆN:\n"
+                                    f"{reasons_str}\n\n"
+                                    f"HÃY DỐC TOÀN LỰC kiểm tra các hướng trên nhằm hoàn thành triệt để mục tiêu của người dùng trước khi kết thúc!\n"
+                                    f"Sau khi đã kiểm tra hoặc chắc chắn không thể khai thác thêm, bạn mới xuất 'final_answer'."
+                                )
+                                max_attempts_display = max(max_guard_challenges, 10) if relentless_pursuit else max_guard_challenges
+                                console.print(
+                                    f"[bold yellow]🛡️ Mission Guard Triggered ({_mission_guard_attempts}/{max_attempts_display}): Tiến độ {progress_pct}%, còn {len(untapped_actions) + len(unfulfilled_objective_vectors)} hướng trọng yếu. Thúc đẩy Red Teamer tiếp tục.[/bold yellow]"
+                                )
+                                audit.log("mission_guard_challenge", {
+                                    "attempt": _mission_guard_attempts,
+                                    "progress_pct": progress_pct,
+                                    "untapped_actions": untapped_actions[:3],
+                                    "unfulfilled_vectors": unfulfilled_objective_vectors,
+                                })
+                                messages.append({
+                                    "role": "user",
+                                    "content": guard_prompt,
+                                })
                                 continue
-
+    
+    
                             console.print(
-                                f"\n[bold red]🛑 STAGNATION LIMIT REACHED ({_stagnation_counter} consecutive steps without new findings).[/bold red]"
+                                Panel(
+                                    f"[bold green]{final_text}[/bold green]",
+                                    title="[bold magenta]🎯 Final Answer (Red Teamer)[/bold magenta]",
+                                    border_style="magenta",
+                                )
                             )
-                            console.print(
-                                "[bold yellow]Auto-converging assessment to generate final report...[/bold yellow]"
-                            )
-                            audit.log("stagnation_forced_finalize", {
-                                "iteration": iteration,
-                                "stagnation_steps": _stagnation_counter,
-                                "tools_called": len(tools_called),
-                                "findings_count": len(report_state.findings),
-                            })
-                            forced_summary = (
-                                f"Đánh giá an ninh đã hoàn thành sau {iteration} bước thực thi. "
-                                f"Mục tiêu đã được rà soát qua {len(set(tools_called))} công cụ khác nhau. "
-                                f"Trong {_stagnation_counter} bước gần nhất không phát hiện thêm bề mặt tấn công hoặc lỗ hổng mới. "
-                                f"Tổng cộng đã xác nhận {len(report_state.findings)} phát hiện với điểm rủi ro {report_state.risk_score}/10."
-                            )
+    
+                            # ============================================================
+                            # FINALIZE: Reporter final polish + DOCX generation
+                            # ============================================================
                             report_state.total_iterations = iteration
-                            report_state.finalize(red_teamer_answer=forced_summary)
-
+                            report_state.finalize(red_teamer_answer=final_text)
+    
                             # Final polish pass by Reporter
                             console.print("\n[bold yellow][*] Reporter — Final Polish...[/bold yellow]")
                             await _reporter_final_polish(client, report_state)
-
+    
                             audit.log("reporter_final_polish", {
                                 "findings_count": len(report_state.findings),
                                 "risk_score": report_state.risk_score,
                             })
-
+    
                             # Cold Ingest Full Assessment Playbook into Vector DB
                             _cold_ingest_assessment_playbook(vector_memory, report_state, vectordb_cfg)
-
+    
                             # Persist Tactical Policy learned knowledge
                             if tactical_policy:
                                 tactical_policy.save_policy()
@@ -2934,15 +3176,15 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                     f"[dim green]💾 Tactical Policy: Đã lưu {len(tactical_policy.q_table)} trạng thái "
                                     f"và {tactical_policy.total_updates} cập nhật vào đĩa.[/dim green]"
                                 )
-
+    
                             # Generate Multi-Format Reports (DOCX, Markdown, JSON)
                             report_path = _export_all_reports(report_state, audit.path, target_raw_str)
                             console.print(f"[bold green][+] Audit Trail: {audit.path}[/bold green]\n")
-
+    
                             # Display final summary
                             severity_counts = report_state.get_severity_counts()
                             summary_table = Table(
-                                title="📊 Assessment Summary (Stagnation Converged)",
+                                title="📊 Assessment Summary",
                                 border_style="cyan",
                             )
                             summary_table.add_column("Metric", style="cyan")
@@ -2963,255 +3205,120 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             except Exception:
                                 pass
                             console.print(summary_table)
-
+    
                             audit.log("session_end", {
                                 "total_iterations": iteration,
                                 "tools_called": tools_called,
                                 "findings_count": len(report_state.findings),
                                 "risk_score": report_state.risk_score,
-                                "forced_stagnation": True,
                             })
                             audit.close()
-                            return report_state.executive_summary or forced_summary
-
-                        # Build message for Red Teamer (tool result + optional reporter feedback)
-                        truncated_result = _truncate_tool_output_for_llm(result_str)
-                        tool_msg = f"Tool '{tool_name}' result: {truncated_result}"
-                        if feedback_block:
-                            tool_msg += f"\n\n{feedback_block}"
-                        if pivot_info:
-                            tool_msg += (
-                                f"\n\n[🔄 TỰ ĐỘNG CHUYỂN HƯỚNG CHIẾN THUẬT (ADAPTIVE PIVOT)]\n"
-                                f"Phát hiện vật cản: {pivot_info['obstacle']}.\n"
-                                f"Lệnh chuyển hướng: Gọi ngay công cụ '{pivot_info['pivot_tool']}'.\n"
-                                f"Lý do: {pivot_info['reason']}\n"
-                                f"HÃY THI HÀNH CÔNG CỤ NÀY Ở BƯỚC KẾ TIẾP!"
+    
+                            return report_state.executive_summary or final_text
+    
+                        else:
+                            invalid_action_msg = (
+                                f"System Error: Unsupported action '{action}'. "
+                                "Action must be either 'call_tool' or 'final_answer'."
                             )
-                        if _stagnation_counter >= stagnation_warning_thresh:
-                            roadmap = report_state.get_tactical_roadmap()
-                            top_untried = [a for a in roadmap.get("top_actions", []) if a.get("priority") in ("CRITICAL", "HIGH")]
-                            pivot_advice = ""
-                            if top_untried:
-                                pivot_advice = f"\n🎯 ĐỔI HƯỚNG CHIẾN THUẬT NGAY: Chuyển sang công cụ '{top_untried[0]['action']}' ({top_untried[0]['recommendation']})."
-                            tool_msg += (
-                                f"\n\n[⚠️ SYSTEM ALERT — STAGNATION DETECTED ({_stagnation_counter}/{stagnation_max_thresh})]\n"
-                                "Các bước vừa qua không phát hiện thêm bề mặt tấn công hay lỗ hổng mới. "
-                                "TUYỆT ĐỐI KHÔNG lặp lại công cụ hoặc quét lại mục tiêu cũ. "
-                                f"{pivot_advice}\n"
-                                "Nếu toàn bộ bề mặt tấn công và các vector chiến thuật khả thi đã được thử nghiệm hết, hãy xuất 'final_answer'."
-                            )
-                            console.print(
-                                f"[bold yellow]⚠️ Stagnation Warning ({_stagnation_counter}/{stagnation_max_thresh}): Cung cấp gợi ý đổi hướng chiến thuật[/bold yellow]"
-                            )
-
-                        messages.append({"role": "user", "content": tool_msg})
-                        continue
-
-                    elif action == "final_answer":
-                        final_text = parsed_json.get("text", "No final answer provided.")
-
-                        # ★ MISSION COMPLETENESS GUARD & TARGETED OBJECTIVE VERIFICATION:
-                        # Prevent premature final_answer if critical mission vectors remain untested
-                        roadmap = report_state.get_tactical_roadmap()
-                        progress_pct = roadmap.get("progress_percentage", 100)
-                        untapped_actions = [a for a in roadmap.get("top_actions", []) if a.get("priority") in ("CRITICAL", "HIGH")]
-
-                        # Check if user's explicit objective has unfulfilled direct requirements
-                        should_guard, unfulfilled_objective_vectors = _evaluate_mission_guard(
-                            report_state=report_state,
-                            tools_called=tools_called,
-                            progress_pct=progress_pct,
-                            untapped_actions=untapped_actions,
-                            iteration=iteration,
-                            max_iterations=max_iterations,
-                            guard_attempts=_mission_guard_attempts,
-                            relentless_pursuit=relentless_pursuit,
-                            max_guard_attempts=max_guard_challenges,
-                        )
-
-                        if should_guard:
-                            _mission_guard_attempts += 1
-                            reasons = []
-                            if unfulfilled_objective_vectors:
-                                reasons.extend([f"  - 🎯 {v}" for v in unfulfilled_objective_vectors])
-                            if untapped_actions:
-                                reasons.extend([
-                                    f"  - [Ưu tiên {a['priority']}] {a['recommendation']} (Ví dụ công cụ: '{a['action']}')"
-                                    for a in untapped_actions[:2]
-                                ])
-                            reasons_str = "\n".join(reasons)
-                            guard_prompt = (
-                                f"[⚠️ HỘI ĐỒNG CHIẾN THUẬT CẢNH BÁO — CHƯA ĐẠT MỤC TIÊU TỐI TÂN]\n"
-                                f"Mục tiêu của người dùng: '{report_state.mission_objective or report_state.target_objective}'.\n"
-                                f"Tiến độ hoàn thành mục tiêu ước tính: {progress_pct}%.\n"
-                                f"Vẫn còn các nhiệm vụ trọng tâm của sứ mệnh CHƯA ĐƯỢC THỰC HIỆN:\n"
-                                f"{reasons_str}\n\n"
-                                f"HÃY DỐC TOÀN LỰC kiểm tra các hướng trên nhằm hoàn thành triệt để mục tiêu của người dùng trước khi kết thúc!\n"
-                                f"Sau khi đã kiểm tra hoặc chắc chắn không thể khai thác thêm, bạn mới xuất 'final_answer'."
-                            )
-                            max_attempts_display = max(max_guard_challenges, 10) if relentless_pursuit else max_guard_challenges
-                            console.print(
-                                f"[bold yellow]🛡️ Mission Guard Triggered ({_mission_guard_attempts}/{max_attempts_display}): Tiến độ {progress_pct}%, còn {len(untapped_actions) + len(unfulfilled_objective_vectors)} hướng trọng yếu. Thúc đẩy Red Teamer tiếp tục.[/bold yellow]"
-                            )
-                            audit.log("mission_guard_challenge", {
-                                "attempt": _mission_guard_attempts,
-                                "progress_pct": progress_pct,
-                                "untapped_actions": untapped_actions[:3],
-                                "unfulfilled_vectors": unfulfilled_objective_vectors,
-                            })
-                            messages.append({
-                                "role": "user",
-                                "content": guard_prompt,
-                            })
+                            console.print(f"[bold red]❌ {invalid_action_msg}[/bold red]")
+                            messages.append({"role": "user", "content": invalid_action_msg})
                             continue
-
-
+    
+                    except Exception as e:
+                        _consecutive_json_errors += 1
                         console.print(
-                            Panel(
-                                f"[bold green]{final_text}[/bold green]",
-                                title="[bold magenta]🎯 Final Answer (Red Teamer)[/bold magenta]",
-                                border_style="magenta",
+                            f"[bold red]System Recovered from Error ({_consecutive_json_errors}): {e}[/bold red]"
+                        )
+    
+                        # Escalating error recovery:
+                        # - First 2 failures: gentle reminder
+                        # - 3+ failures: inject concrete example to break the loop
+                        if _consecutive_json_errors >= 3:
+                            # Nuclear option: purge all error messages and inject a working example
+                            # This breaks the 7B model out of infinite error loops
+                            messages = [m for m in messages if not (
+                                m.get("role") == "user" and m.get("content", "").startswith("ERROR:")
+                            )]
+                            # Pick next untried tool dynamically to avoid DUPLICATE BLOCKED
+                            _recovery_tools = [
+                                ("docker_whatweb", '{"url": "TARGET_HERE"}'),
+                                ("docker_crawl_web", '{"url": "TARGET_HERE"}'),
+                                ("docker_nuclei_scan", '{"target": "TARGET_HERE"}'),
+                                ("docker_nikto_scan", '{"url": "TARGET_HERE"}'),
+                                ("docker_subfinder", '{"domain": "TARGET_HERE"}'),
+                                ("docker_dirb_scan", '{"url": "TARGET_HERE"}'),
+                                ("docker_sensitive_files_scan", '{"url": "TARGET_HERE"}'),
+                                ("docker_http_headers_audit", '{"url": "TARGET_HERE"}'),
+                            ]
+                            _next_tool = "docker_whatweb"
+                            _next_args = '{"url": "TARGET_HERE"}'
+                            for _rt_name, _rt_args in _recovery_tools:
+                                if _rt_name not in tools_called:
+                                    _next_tool = _rt_name
+                                    _next_args = _rt_args
+                                    break
+                            recovery_msg = (
+                                "SYSTEM RESET: Previous errors cleared. "
+                                "Output ONLY a ```json``` block. Keep thought under 50 words. "
+                                "NO text outside the json block.\n\n"
+                                '```json\n'
+                                '{\n'
+                                '  "thought": "Next step reconnaissance",\n'
+                                '  "action": "call_tool",\n'
+                                f'  "tool_name": "{_next_tool}",\n'
+                                f'  "arguments": {_next_args}\n'
+                                '}\n'
+                                '```\n\n'
+                                "Replace TARGET_HERE with the actual target URL or domain."
                             )
-                        )
-
-                        # ============================================================
-                        # FINALIZE: Reporter final polish + DOCX generation
-                        # ============================================================
-                        report_state.total_iterations = iteration
-                        report_state.finalize(red_teamer_answer=final_text)
-
-                        # Final polish pass by Reporter
-                        console.print("\n[bold yellow][*] Reporter — Final Polish...[/bold yellow]")
-                        await _reporter_final_polish(client, report_state)
-
-                        audit.log("reporter_final_polish", {
-                            "findings_count": len(report_state.findings),
-                            "risk_score": report_state.risk_score,
-                        })
-
-                        # Cold Ingest Full Assessment Playbook into Vector DB
-                        _cold_ingest_assessment_playbook(vector_memory, report_state, vectordb_cfg)
-
-                        # Persist Tactical Policy learned knowledge
-                        if tactical_policy:
-                            tactical_policy.save_policy()
-                            console.print(
-                                f"[dim green]💾 Tactical Policy: Đã lưu {len(tactical_policy.q_table)} trạng thái "
-                                f"và {tactical_policy.total_updates} cập nhật vào đĩa.[/dim green]"
+                            messages.append({"role": "user", "content": recovery_msg})
+                            _consecutive_json_errors = 0  # Reset after nuclear recovery
+                            console.print("[bold yellow]🔄 NUCLEAR RECOVERY: Injected concrete example[/bold yellow]")
+                        else:
+                            error_msg = (
+                                f"ERROR: JSON parse failed: {e}. "
+                                "Reply with ONLY a ```json``` code block. No extra text outside the block. "
+                                "Use simple ASCII text in the thought field to avoid encoding issues."
                             )
-
-                        # Generate Multi-Format Reports (DOCX, Markdown, JSON)
-                        report_path = _export_all_reports(report_state, audit.path, target_raw_str)
-                        console.print(f"[bold green][+] Audit Trail: {audit.path}[/bold green]\n")
-
-                        # Display final summary
-                        severity_counts = report_state.get_severity_counts()
-                        summary_table = Table(
-                            title="📊 Assessment Summary",
-                            border_style="cyan",
-                        )
-                        summary_table.add_column("Metric", style="cyan")
-                        summary_table.add_column("Value", style="bold")
-                        summary_table.add_row("Target", target_raw)
-                        summary_table.add_row("Risk Score", f"{report_state.risk_score}/10 ({report_state.get_overall_risk_label()})")
-                        summary_table.add_row("Total Findings", str(len(report_state.findings)))
-                        summary_table.add_row("CRITICAL", str(severity_counts["CRITICAL"]))
-                        summary_table.add_row("HIGH", str(severity_counts["HIGH"]))
-                        summary_table.add_row("MEDIUM", str(severity_counts["MEDIUM"]))
-                        summary_table.add_row("LOW", str(severity_counts["LOW"]))
-                        summary_table.add_row("Tools Used", str(len(tools_called)))
-                        summary_table.add_row("Iterations", str(iteration))
-                        try:
-                            crit = report_state.generate_attack_graph().get_critical_path()
-                            if crit:
-                                summary_table.add_row("Critical Path", crit.to_summary())
-                        except Exception:
-                            pass
-                        console.print(summary_table)
-
-                        audit.log("session_end", {
-                            "total_iterations": iteration,
-                            "tools_called": tools_called,
-                            "findings_count": len(report_state.findings),
-                            "risk_score": report_state.risk_score,
+                            messages.append({"role": "user", "content": error_msg})
+    
+                        audit.log("json_error", {
+                            "error": str(e),
+                            "iteration": iteration,
+                            "consecutive": _consecutive_json_errors,
                         })
-                        audit.close()
-
-                        return report_state.executive_summary or final_text
-
-                    else:
-                        invalid_action_msg = (
-                            f"System Error: Unsupported action '{action}'. "
-                            "Action must be either 'call_tool' or 'final_answer'."
-                        )
-                        console.print(f"[bold red]❌ {invalid_action_msg}[/bold red]")
-                        messages.append({"role": "user", "content": invalid_action_msg})
                         continue
-
-                except Exception as e:
-                    _consecutive_json_errors += 1
-                    console.print(
-                        f"[bold red]System Recovered from Error ({_consecutive_json_errors}): {e}[/bold red]"
-                    )
-
-                    # Escalating error recovery:
-                    # - First 2 failures: gentle reminder
-                    # - 3+ failures: inject concrete example to break the loop
-                    if _consecutive_json_errors >= 3:
-                        # Nuclear option: purge all error messages and inject a working example
-                        # This breaks the 7B model out of infinite error loops
-                        messages = [m for m in messages if not (
-                            m.get("role") == "user" and m.get("content", "").startswith("ERROR:")
-                        )]
-                        # Pick next untried tool dynamically to avoid DUPLICATE BLOCKED
-                        _recovery_tools = [
-                            ("docker_whatweb", '{"url": "TARGET_HERE"}'),
-                            ("docker_crawl_web", '{"url": "TARGET_HERE"}'),
-                            ("docker_nuclei_scan", '{"target": "TARGET_HERE"}'),
-                            ("docker_nikto_scan", '{"url": "TARGET_HERE"}'),
-                            ("docker_subfinder", '{"domain": "TARGET_HERE"}'),
-                            ("docker_dirb_scan", '{"url": "TARGET_HERE"}'),
-                            ("docker_sensitive_files_scan", '{"url": "TARGET_HERE"}'),
-                            ("docker_http_headers_audit", '{"url": "TARGET_HERE"}'),
-                        ]
-                        _next_tool = "docker_whatweb"
-                        _next_args = '{"url": "TARGET_HERE"}'
-                        for _rt_name, _rt_args in _recovery_tools:
-                            if _rt_name not in tools_called:
-                                _next_tool = _rt_name
-                                _next_args = _rt_args
-                                break
-                        recovery_msg = (
-                            "SYSTEM RESET: Previous errors cleared. "
-                            "Output ONLY a ```json``` block. Keep thought under 50 words. "
-                            "NO text outside the json block.\n\n"
-                            '```json\n'
-                            '{\n'
-                            '  "thought": "Next step reconnaissance",\n'
-                            '  "action": "call_tool",\n'
-                            f'  "tool_name": "{_next_tool}",\n'
-                            f'  "arguments": {_next_args}\n'
-                            '}\n'
-                            '```\n\n'
-                            "Replace TARGET_HERE with the actual target URL or domain."
-                        )
-                        messages.append({"role": "user", "content": recovery_msg})
-                        _consecutive_json_errors = 0  # Reset after nuclear recovery
-                        console.print("[bold yellow]🔄 NUCLEAR RECOVERY: Injected concrete example[/bold yellow]")
-                    else:
-                        error_msg = (
-                            f"ERROR: JSON parse failed: {e}. "
-                            "Reply with ONLY a ```json``` code block. No extra text outside the block. "
-                            "Use simple ASCII text in the thought field to avoid encoding issues."
-                        )
-                        messages.append({"role": "user", "content": error_msg})
-
-                    audit.log("json_error", {
-                        "error": str(e),
-                        "iteration": iteration,
-                        "consecutive": _consecutive_json_errors,
-                    })
-                    continue
+    
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                console.print(
+                    "\n[bold yellow]⚠️ Phát hiện lệnh ngắt từ người vận hành (Ctrl+C). "
+                    "Đang tự động kết xuất báo cáo an toàn từ các phát hiện đã tích lũy...[/bold yellow]"
+                )
+                audit.log("user_interrupted", {
+                    "iteration": iteration if 'iteration' in locals() else 0,
+                    "findings_count": len(report_state.findings),
+                    "tools_called": tools_called if 'tools_called' in locals() else [],
+                })
+                interrupt_summary = (
+                    f"Đánh giá bị dừng bởi người vận hành sau {len(tools_called) if 'tools_called' in locals() else 0} công cụ. "
+                    f"Đã xác nhận {len(report_state.findings)} phát hiện với điểm rủi ro {report_state.risk_score}/10."
+                )
+                report_state.total_iterations = iteration if 'iteration' in locals() else (len(tools_called) if 'tools_called' in locals() else 0)
+                report_state.finalize(red_teamer_answer=interrupt_summary)
+                try:
+                    await _reporter_final_polish(client, report_state)
+                except Exception:
+                    pass
+                if tactical_policy:
+                    try:
+                        tactical_policy.save_policy()
+                    except Exception:
+                        pass
+                report_path = _export_all_reports(report_state, audit.path, target_raw_str)
+                console.print(f"[bold green][+] Audit Trail: {audit.path}[/bold green]\n")
+                audit.close()
+                return report_state.executive_summary or interrupt_summary
 
             # Fallback if iterations exhausted
             report_state.total_iterations = max_iterations

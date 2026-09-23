@@ -1637,6 +1637,14 @@ class ReportState:
             for a in roadmap["untested_actions"][:2]:
                 lines.append(f"  → [{a['priority']}] {a['tool']}: {a['reason']}")
 
+        # Real-time Bayesian Attack Graph Critical Kill-Chain
+        try:
+            crit = self.generate_attack_graph().get_critical_path()
+            if crit and len(crit.node_ids) > 1 and crit.cumulative_probability > 0:
+                lines.append(f"Đường dẫn thâm nhập nguy hiểm nhất (Bayesian Kill-Chain): {crit.to_summary()}")
+        except Exception:
+            pass
+
         return "\n".join(lines)
 
     def get_reporter_feedback_block(self, latest_suggestion: str = "",
@@ -1678,6 +1686,14 @@ class ReportState:
         top_actions = [a for a in roadmap.get("top_actions", []) if a.get("priority") in ("CRITICAL", "HIGH")]
         if top_actions:
             lines.append(f"🎯 Lộ trình tối ưu đề xuất: [{top_actions[0]['action']}] {top_actions[0]['recommendation']}")
+
+        # Real-time Critical Attack Vector (Bayesian Kill-Chain)
+        try:
+            crit = self.generate_attack_graph().get_critical_path()
+            if crit and len(crit.node_ids) > 1 and crit.cumulative_probability > 0:
+                lines.append(f"⚡ Bayesian Kill-Chain: {crit.to_summary()}")
+        except Exception:
+            pass
 
         if not latest_findings and not latest_suggestion and not top_actions:
             lines.append("✅ Không phát hiện mới từ bước này.")

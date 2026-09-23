@@ -32,6 +32,8 @@ from src.client.orchestrator import (
     _clean_thinking_tags,
     _extract_reporter_fallback,
     _truncate_tool_output_for_llm,
+    _get_tool_timeout,
+    _retry_tool_call,
     _RE_THINK_TAGS,
     AuditLogger,
 )
@@ -478,7 +480,45 @@ class TestToolOutputTruncation:
         assert "Đã rút gọn" in truncated
 
 
+
+class TestToolTimeoutAndRetry:
+    def test_get_tool_timeout_resolves_configured(self):
+        t_crawl = _get_tool_timeout("docker_crawl_web")
+        assert t_crawl >= 75.0
+        t_fast = _get_tool_timeout("docker_scan_ports_fast")
+        assert t_fast >= 135.0
+        t_unknown = _get_tool_timeout("unknown_custom_tool")
+        assert t_unknown == 135.0  # 120 + 15 buffer
+
+    @pytest.mark.asyncio
+    async def test_retry_tool_call_timeout_handling(self):
+        import asyncio
+        class MockHangingSession:
+            async def call_tool(self, name, args):
+                await asyncio.sleep(5)
+                return None
+
+        session = MockHangingSession()
+        res = await _retry_tool_call(session, "test_hang", {}, max_retries=1, delay=0.01, timeout=0.05)
+        assert "timed out after" in res
+
+
+class TestRealtimeBayesianGuidance:
+    def test_get_current_summary_includes_bayesian_critical_path(self):
+        rs = ReportState(target="http://example.com")
+        rs.add_finding(Finding(title="SQL Injection", severity="HIGH", cve_id="CWE-89", tool_source="docker_sqlmap_scan"))
+        summary = rs.get_current_summary()
+        assert "Bayesian Kill-Chain" in summary
+
+    def test_get_reporter_feedback_block_includes_bayesian_kill_chain(self):
+        rs = ReportState(target="http://example.com")
+        rs.add_finding(Finding(title="SQL Injection", severity="HIGH", cve_id="CWE-89", tool_source="docker_sqlmap_scan"))
+        block = rs.get_reporter_feedback_block(latest_suggestion="Run dump")
+        assert "Bayesian Kill-Chain" in block
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
 
 
