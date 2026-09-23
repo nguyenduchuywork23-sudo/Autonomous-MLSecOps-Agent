@@ -1,10 +1,11 @@
-"""Orchestrator v4.0 and ReAct loop for Local Security Agent.
+"""Orchestrator and ReAct loop for Local Security Agent.
 
-Major upgrades over v3.0:
-- Real-time Dual-Agent Collaboration: Reporter (3B) observes every tool
-  result, updates findings, and injects suggestions for Red Teamer (7B)
+Key capabilities:
+- Real-time Dual-Agent Collaboration: Reporter observes every tool
+  result, updates findings, and injects suggestions for Red Teamer
 - ReportState: shared memory accumulating findings in real-time
-- Enterprise DOCX-only output (HTML removed)
+- DOCX report generation
+- Tactical Policy Engine: Reinforcement learning & Bandit decision guidance
 - Structured reporter output (JSON) for precise report rendering
 - Config-driven (reads from config.yaml)
 """
@@ -42,6 +43,7 @@ import logging
 from src.utils.config import load_config, get as cfg_get
 from src.client.report_state import ReportState, Finding, ToolStep
 from src.utils.report_generator import generate_docx_report
+from src.utils.tactical_policy import TacticalPolicyManager, AttackStateExtractor
 
 console = Console()
 logger = logging.getLogger("orchestrator")
@@ -1767,13 +1769,13 @@ async def run_agent(prompt: str, server_script: str | None = None,
                     scan_mode: str = "recon") -> str:
     """Execute autonomous ReAct loop with real-time dual-agent collaboration.
 
-    v4.0 architecture:
+    Architecture:
     - Red Teamer (7B) runs the ReAct loop, calls tools
     - Reporter (3B) observes EVERY tool result in real-time
     - Reporter updates ReportState with findings and injects suggestions
     - Red Teamer sees Reporter feedback before choosing next action
     - Final polish pass by Reporter after Red Teamer finishes
-    - Enterprise DOCX generated from accumulated ReportState
+    - Professional DOCX generated from accumulated ReportState
 
     Args:
         prompt: The mission prompt for the agent.
@@ -1851,13 +1853,37 @@ async def run_agent(prompt: str, server_script: str | None = None,
         except Exception as e:
             console.print(f"[dim yellow]⚠️ RAG Memory không khả dụng: {e}[/dim yellow]")
 
+    # ━━━ Tactical Policy Engine Initialization (RL & Bandit Hybrid) ━━━
+    tp_cfg = config.get("tactical_policy", {})
+    tactical_policy = None
+    if tp_cfg.get("enabled", True):
+        try:
+            from src.utils.tactical_policy import TacticalPolicyManager, AttackStateExtractor
+            tp_path = tp_cfg.get("policy_file", "data/tactical_policy.json")
+            if not os.path.isabs(tp_path):
+                tp_path = os.path.join(base_dir, tp_path)
+            tactical_policy = TacticalPolicyManager(
+                policy_file=tp_path,
+                learning_rate=float(tp_cfg.get("learning_rate", 0.15)),
+                discount_factor=float(tp_cfg.get("discount_factor", 0.85)),
+                exploration_bonus=float(tp_cfg.get("exploration_bonus", 1.2)),
+                enabled=True,
+            )
+            console.print(
+                f"[bold green]🎯 Tactical Policy Engine: ONLINE "
+                f"({len(tactical_policy.q_table)} states, {tactical_policy.total_updates} updates)[/bold green]"
+            )
+        except Exception as e:
+            console.print(f"[dim yellow]⚠️ Tactical Policy không khả dụng: {e}[/dim yellow]")
+
     console.print(
         Panel.fit(
-            f"[bold cyan]Starting Agent Orchestrator v4.0[/bold cyan]\n"
+            f"[bold cyan]Starting Agent Orchestrator[/bold cyan]\n"
             f"[dim]Model:[/dim] {model} | [dim]Mode:[/dim] {scan_mode.upper()} | "
             f"[dim]Max Iter:[/dim] {max_iterations} | [dim]Context:[/dim] {context_window} msgs\n"
             f"[dim]Reporter:[/dim] {'🟢 Real-time' if reporter_realtime else '🔴 Disabled'} | "
-            f"[dim]Memory:[/dim] {'🟢 Enterprise RAG' if vector_memory else '⚪ Off'} | "
+            f"[dim]Policy:[/dim] {'🟢 RL-Hybrid' if tactical_policy else '⚪ Off'} | "
+            f"[dim]Memory:[/dim] {'🟢 RAG' if vector_memory else '⚪ Off'} | "
             f"[dim]Skip:[/dim] {', '.join(reporter_skip_tools) if reporter_skip_tools else 'none'}",
             border_style="cyan",
         )
@@ -1955,15 +1981,15 @@ async def run_agent(prompt: str, server_script: str | None = None,
                     "- Focus on high-value attack vectors. When relevant tools have been executed and no further vectors remain, output final_answer.\n"
                 )
 
-            # v4.1 addition: SOC Analyst collaboration notice
+            # SOC Analyst collaboration notice
             soc_notice = (
-                "\n\n# SOC ANALYST COLLABORATION (v4.1 — TỐI ĐA HÓA NỖ LỰC ĐẠT MỤC TIÊU):\n"
+                "\n\n# SOC ANALYST COLLABORATION (TỐI ĐA HÓA NỖ LỰC ĐẠT MỤC TIÊU):\n"
                 "A senior SOC Analyst observes every step in REAL-TIME as your tactical co-pilot. After each tool execution, "
                 "the SOC Analyst evaluates your progress toward the USER MISSION OBJECTIVE and suggests the most impactful next action.\n"
                 "You MUST read and proactively adopt the SOC Analyst's guidance to maintain maximum momentum toward the goal.\n"
             )
 
-            # RAG Long-term Memory: Historical Past Experience Injection (Enterprise-grade)
+            # RAG Long-term Memory: Historical Past Experience Injection
             rag_experience_block = ""
             if vector_memory:
                 try:
@@ -1995,11 +2021,11 @@ async def run_agent(prompt: str, server_script: str | None = None,
                 f"TOOLS ({len(tools_schema)} available):\n{tool_reference}\n\n"
                 "# STRICT RULES OF ENGAGEMENT:\n\n"
                 "1. **5 Tactical Dimensions (keep each under 15 words):**\n"
-                "   - [TÌNH BÁO]: Hiện trạng bề mặt tấn công\n"
-                "   - [GIẢ THUYẾT]: Vector khai thác nhắm tới\n"
-                "   - [CỘT MỐC]: Mục tiêu cần hoàn thành\n"
-                "   - [NÉ TRÁNH]: WAF/firewall bypass nếu cần\n"
-                "   - [DỰ PHÒNG]: Công cụ thay thế nếu thất bại\n\n"
+                "   - [TÌNH BÁO TỔNG HỢP]: Hiện trạng bề mặt tấn công\n"
+                "   - [GIẢ THUYẾT ĐỘT PHÁ]: Vector khai thác nhắm tới\n"
+                "   - [ĐÒN ĐÁNH CỘT MỐC]: Mục tiêu cần hoàn thành\n"
+                "   - [CHIẾN THUẬT NÉ TRÁNH PHÒNG THỦ]: WAF/firewall bypass nếu cần\n"
+                "   - [DỰ PHÒNG TỨC THỜI]: Công cụ thay thế nếu thất bại\n\n"
                 "2. **Recon First, Then Exploit:** Run `docker_crawl_web` first. "
                 "Use recon output to guide exploitation. Do NOT run exploit tools blindly on root '/'. "
                 "But after recon is done, you MUST escalate to exploitation tools.\n\n"
@@ -2159,6 +2185,37 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                 console.print(f"[dim green]🧠 RAG: Nạp {len(tactical_recalled)} kịch bản chiến thuật vào ngữ cảnh bước {iteration}[/dim green]")
                     except Exception:
                         pass
+
+                # Dynamic Tactical Policy Guidance (Q-learning & UCB1 Bandit)
+                current_state_key = ""
+                if tactical_policy:
+                    try:
+                        current_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
+                        recs = tactical_policy.recommend_actions(
+                            state_key=current_state_key,
+                            top_k=3,
+                            exclude_tools=set(tools_called) if len(tools_called) < 25 else None,
+                        )
+                        if recs:
+                            rec_lines = [
+                                f"- `{r.tool_name}` (Q={r.q_value:.1f}, Visits={r.visits}) → {r.rationale}"
+                                for r in recs
+                            ]
+                            rec_block = (
+                                f"[🎯 GỢI Ý CHIẾN THUẬT (TACTICAL POLICY ENGINE - Q-LEARNING)]\n"
+                                f"Trạng thái mục tiêu: `{current_state_key}`\n"
+                                f"Top hành động được tối ưu hóa toán học (UCB1) dựa trên dữ liệu tích lũy:\n"
+                                + "\n".join(rec_lines)
+                                + "\n(Hãy cân nhắc ưu tiên các công cụ này nếu phù hợp với ngữ cảnh mục tiêu)."
+                            )
+                            if not any(f"Trạng thái mục tiêu: `{current_state_key}`" in str(m.get("content", "")) for m in messages[-2:]):
+                                messages.append({
+                                    "role": "user",
+                                    "content": rec_block
+                                })
+                                console.print(f"[dim cyan]🎯 Policy Engine: Gợi ý {len(recs)} công cụ tối ưu cho state [{current_state_key}][/dim cyan]")
+                    except Exception as e:
+                        logger.debug("Tactical policy recommendation error: %s", e)
 
                 try:
                     call_kwargs = {
@@ -2329,6 +2386,10 @@ async def run_agent(prompt: str, server_script: str | None = None,
                         )
 
                         findings_count_before = len(report_state.findings)
+                        open_ports_before = len(report_state.attack_surface.open_ports)
+                        endpoints_before = len(report_state.attack_surface.parameterized_endpoints)
+                        pre_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called) if tactical_policy else ""
+                        is_duplicate_call = (tools_called.count(tool_name) > 0)
                         surface_count_before = (
                             len(report_state.attack_surface.open_ports)
                             + len(report_state.attack_surface.parameterized_endpoints)
@@ -2502,6 +2563,45 @@ async def run_agent(prompt: str, server_script: str | None = None,
                         )
                         report_state.add_step(step)
 
+                        # Tactical Policy Engine: Reinforcement Learning Reward & Q-update
+                        if tactical_policy and pre_state_key:
+                            try:
+                                diff_findings = max(0, len(report_state.findings) - findings_count_before)
+                                new_sevs = [f.severity for f in report_state.findings[-diff_findings:]] if diff_findings > 0 else []
+                                new_ports = max(0, len(report_state.attack_surface.open_ports) - open_ports_before)
+                                new_endpoints = max(0, len(report_state.attack_surface.parameterized_endpoints) - endpoints_before)
+
+                                reward = tactical_policy.reward_engine.compute_reward(
+                                    tool_name=tool_name,
+                                    pre_findings_count=findings_count_before,
+                                    post_findings_count=len(report_state.findings),
+                                    new_severities=new_sevs,
+                                    new_ports_discovered=new_ports,
+                                    new_endpoints_discovered=new_endpoints,
+                                    tool_status=tool_status,
+                                    is_duplicate_call=is_duplicate_call,
+                                )
+                                post_state_key = AttackStateExtractor.extract_state_key(report_state, tools_called)
+                                new_q = tactical_policy.record_outcome(
+                                    state_key=pre_state_key,
+                                    action=tool_name,
+                                    reward=reward,
+                                    next_state_key=post_state_key,
+                                )
+                                color = "green" if reward > 0 else ("red" if reward < 0 else "dim")
+                                console.print(
+                                    f"[dim {color}]🎯 Policy Q-Update: {tool_name} → R={reward:+.1f} | Q={new_q:.2f} (Updates: {tactical_policy.total_updates})[/dim {color}]"
+                                )
+                                audit.log("tactical_policy_update", {
+                                    "state": pre_state_key,
+                                    "action": tool_name,
+                                    "reward": reward,
+                                    "q_value": new_q,
+                                    "next_state": post_state_key,
+                                })
+                            except Exception as e:
+                                logger.debug("Tactical policy update error: %s", e)
+
                         # Check for adaptive tactical pivot
                         pivot_info = _resolve_tactical_pivot(tool_name, result_str, report_state)
                         if pivot_info:
@@ -2626,6 +2726,14 @@ async def run_agent(prompt: str, server_script: str | None = None,
 
                             # Cold Ingest Full Assessment Playbook into Vector DB
                             _cold_ingest_assessment_playbook(vector_memory, report_state, vectordb_cfg)
+
+                            # Persist Tactical Policy learned knowledge
+                            if tactical_policy:
+                                tactical_policy.save_policy()
+                                console.print(
+                                    f"[dim green]💾 Tactical Policy: Đã lưu {len(tactical_policy.q_table)} trạng thái "
+                                    f"và {tactical_policy.total_updates} cập nhật vào đĩa.[/dim green]"
+                                )
 
                             # Generate Multi-Format Reports (DOCX, Markdown, JSON)
                             report_path = _export_all_reports(report_state, audit.path, target_raw_str)
@@ -2777,6 +2885,14 @@ async def run_agent(prompt: str, server_script: str | None = None,
                         # Cold Ingest Full Assessment Playbook into Vector DB
                         _cold_ingest_assessment_playbook(vector_memory, report_state, vectordb_cfg)
 
+                        # Persist Tactical Policy learned knowledge
+                        if tactical_policy:
+                            tactical_policy.save_policy()
+                            console.print(
+                                f"[dim green]💾 Tactical Policy: Đã lưu {len(tactical_policy.q_table)} trạng thái "
+                                f"và {tactical_policy.total_updates} cập nhật vào đĩa.[/dim green]"
+                            )
+
                         # Generate Multi-Format Reports (DOCX, Markdown, JSON)
                         report_path = _export_all_reports(report_state, audit.path, target_raw_str)
                         console.print(f"[bold green][+] Audit Trail: {audit.path}[/bold green]\n")
@@ -2898,6 +3014,14 @@ async def run_agent(prompt: str, server_script: str | None = None,
 
             # Cold Ingest Full Assessment Playbook into Vector DB
             _cold_ingest_assessment_playbook(vector_memory, report_state, vectordb_cfg)
+
+            # Persist Tactical Policy learned knowledge
+            if tactical_policy:
+                tactical_policy.save_policy()
+                console.print(
+                    f"[dim green]💾 Tactical Policy: Đã lưu {len(tactical_policy.q_table)} trạng thái "
+                    f"và {tactical_policy.total_updates} cập nhật vào đĩa.[/dim green]"
+                )
 
             report_path = _export_all_reports(report_state, audit.path, target_raw_str)
             console.print(f"[bold green][+] Audit Trail: {audit.path}[/bold green]\n")

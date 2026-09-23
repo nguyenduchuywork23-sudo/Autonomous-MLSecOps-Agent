@@ -264,6 +264,13 @@ def _default_config() -> dict:
                 "min_cluster_size": 5,
             },
         },
+        "tactical_policy": {
+            "enabled": True,
+            "policy_file": "data/tactical_policy.json",
+            "learning_rate": 0.15,
+            "discount_factor": 0.85,
+            "exploration_bonus": 1.2,
+        },
     }
 
 
@@ -517,5 +524,16 @@ def validate_config(cfg: dict | None = None) -> tuple[bool, list[str]]:
                 errors.append("mcp.server_script must be a non-empty string.")
             if "log_level" in mcp_cfg and mcp_cfg["log_level"] not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
                 errors.append("mcp.log_level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL.")
+
+    # 9. Tactical Policy section
+    tp_cfg = cfg.get("tactical_policy")
+    if tp_cfg is not None:
+        if not isinstance(tp_cfg, dict):
+            errors.append("tactical_policy section must be a dictionary.")
+        else:
+            if "learning_rate" in tp_cfg and (not isinstance(tp_cfg["learning_rate"], (int, float)) or not (0.0 < tp_cfg["learning_rate"] <= 1.0)):
+                errors.append("tactical_policy.learning_rate must be a float between 0 and 1.")
+            if "discount_factor" in tp_cfg and (not isinstance(tp_cfg["discount_factor"], (int, float)) or not (0.0 <= tp_cfg["discount_factor"] <= 1.0)):
+                errors.append("tactical_policy.discount_factor must be a float between 0 and 1.")
 
     return len(errors) == 0, errors
