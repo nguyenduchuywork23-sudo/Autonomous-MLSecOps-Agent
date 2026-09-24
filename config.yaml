@@ -28,6 +28,11 @@ agent:
   compound_threat_correlation: true # Động cơ tương quan lỗ hổng phức hợp (8 chuỗi khai thác)
   max_guard_challenges: 10          # Số lần tối đa chặn kết thúc sớm khi còn vector khả thi (Cực đoan)
   stagnation_max_rescues: 5         # Số lần tối đa giải cứu bế tắc tự động nạp đòn đột phá (Cực đoan)
+  frontier_reasoning: true          # Bật kiến trúc nhận thức đa tầng (Claude 3.7 & GPT-5 Style)
+  cognitive_scratchpad: true        # Bộ nhớ làm việc bền vững chống mất trí nhớ ngữ cảnh
+  tree_of_thought: true             # Cây giả thuyết tấn công với cơ chế quay lui (Backtracking) tự động
+  skeptic_critic: true              # Bộ lọc phản biện loại trừ false-positive (Soft-404, Encoded XSS)
+  defense_evasion: true             # Tự động nhận diện WAF (Cloudflare/ModSec) và né tránh phòng thủ
 
 # --- MCP Server ---
 mcp:

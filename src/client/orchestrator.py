@@ -45,6 +45,10 @@ from src.utils.config import load_config, get as cfg_get
 from src.client.report_state import ReportState, Finding, ToolStep
 from src.utils.report_generator import generate_docx_report
 from src.utils.tactical_policy import TacticalPolicyManager, AttackStateExtractor, extract_semantic_reward
+from src.utils.cognitive_scratchpad import CognitiveScratchpad
+from src.utils.tree_of_thought import TreeOfThoughtEngine, AttackVectorNode, VectorStatus, BacktrackEvent
+from src.utils.cognitive_critic import CognitiveCritic, CriticVerdict
+from src.utils.defense_evasion import DefenseEvasionEngine
 
 console = Console()
 logger = logging.getLogger("orchestrator")
@@ -2480,6 +2484,17 @@ async def run_agent(prompt: str, server_script: str | None = None,
     if report_state is None:
         report_state = ReportState(target=target_raw_str, scan_mode=scan_mode, mission_objective=mission_objective)
 
+    # ━━━ Frontier Cognitive Architecture Initialization (Claude 3.7 & GPT-5 Style) ━━━
+    cognitive_scratchpad = CognitiveScratchpad(target=target_raw_str)
+    tot_engine = TreeOfThoughtEngine(target=target_raw_str)
+    tot_engine.seed_from_target_and_tech(target=target_raw_str)
+    cognitive_critic = CognitiveCritic()
+    defense_evasion = DefenseEvasionEngine()
+    console.print(
+        "[bold cyan]🧠 Frontier Cognitive Architecture: ONLINE "
+        "(Scratchpad Memory, Tree-of-Thought Backtracking, Skeptic Critic, Anti-WAF Evasion)[/bold cyan]"
+    )
+
     # 2. Connect to MCP Server via stdio
     async with stdio_client(server_params) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
@@ -2604,6 +2619,10 @@ async def run_agent(prompt: str, server_script: str | None = None,
                 "TRÁCH NHIỆM VƯỢT TRỘI CỦA BẠN (QWEN):\n"
                 "- Nắm quyền quyết định chiến lược: Hãy tận dụng sức mạnh suy luận ngữ nghĩa của bạn để điều chỉnh tham số 'arguments' một cách tinh vi nhất (URL, endpoints, injection payloads, wordlists).\n"
                 "- Khi cố vấn toán học đưa ra gợi ý, hãy kết hợp với trí tuệ ngữ cảnh của bạn để ra đòn quyết định. Nếu bạn phát hiện một sơ hở tinh tế mà công thức toán học chưa thấy, hãy chủ động khai thác ngay!\n"
+                "- NGUYÊN TẮC SUY LUẬN FRONTIER REASONING (CLAUDE 3.7 & GPT-5 STYLE):\n"
+                "  • Phân Tích Đa Tầng Nhận Thức: Trước mỗi hành động, kết hợp 'Bộ Nhớ Làm Việc' (Scratchpad) và 'Cây Suy Luận' (Tree-of-Thought) để định vị chính xác vị trí trong Kill Chain.\n"
+                "  • Tự Phản Biện & Loại Trừ Bẫy (Critic Reflection): Luôn tự đặt câu hỏi liệu phản hồi trước đó có phải Soft-404, WAF drop, hay lỗi 500 giả tạo không trước khi đưa ra kết luận.\n"
+                "  • Cơ Chế Quay Lui Tự Động (Backtracking): Khi một nhánh tấn công bế tắc hoặc bị WAF chặn, ngay lập tức chuyển hướng sang nhánh giả thuyết tiềm năng tiếp theo trong cây suy luận, tuyệt đối không lặp lại bế tắc.\n"
             )
 
             system_prompt = (
@@ -2816,7 +2835,32 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                     console.print(f"[dim cyan]🎯 Policy Engine: Gợi ý {len(recs)} công cụ tối ưu cho state [{current_state_key}][/dim cyan]")
                         except Exception as e:
                             logger.debug("Tactical policy recommendation error: %s", e)
-    
+
+                    # Dynamic Cognitive Scratchpad (Working Memory Persistence)
+                    try:
+                        scratch_block = cognitive_scratchpad.format_scratchpad_block()
+                        if not any("BỘ NHỚ LÀM VIỆC CAO CẤP" in str(m.get("content", "")) for m in messages[-2:]):
+                            messages.append({"role": "user", "content": scratch_block})
+                    except Exception as e:
+                        logger.debug("Cognitive scratchpad prompt injection error: %s", e)
+
+                    # Dynamic Tree-of-Thought (ToT) Vector Tree
+                    try:
+                        tot_block = tot_engine.format_tot_block()
+                        if not any("CÂY SUY LUẬN CHIẾN THUẬT" in str(m.get("content", "")) for m in messages[-2:]):
+                            messages.append({"role": "user", "content": tot_block})
+                    except Exception as e:
+                        logger.debug("Tree of thought prompt injection error: %s", e)
+
+                    # Dynamic Defense Evasion Directives (WAF bypass & delay)
+                    try:
+                        if defense_evasion.stealth_level != "NORMAL":
+                            evasion_block = defense_evasion.format_evasion_block()
+                            if evasion_block and not any("CHỈ THỊ NÉ TRÁNH PHÒNG THỦ" in str(m.get("content", "")) for m in messages[-2:]):
+                                messages.append({"role": "user", "content": evasion_block})
+                    except Exception as e:
+                        logger.debug("Defense evasion prompt injection error: %s", e)
+
                     try:
                         call_kwargs = {
                             "model": model,
@@ -2948,6 +2992,7 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                 detected_waf=detected_waf_name,
                                 detected_technologies=techs,
                             )
+                            arguments = defense_evasion.adapt_tool_arguments(tool_name, arguments)
     
                             # ANTI-LOOP ENFORCEMENT: block duplicate tool+args calls
                             call_sig = f"{tool_name}::{json.dumps(arguments, sort_keys=True)}"
@@ -3050,6 +3095,16 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             distilled_intel = _distill_tool_intelligence(tool_name, result_str)
                             if distilled_intel.get("summary") and distilled_intel["summary"] != "Không có dấu hiệu đặc biệt.":
                                 console.print(f"[bold dim yellow]⚡ Distilled Intel:[/bold dim yellow] [dim]{distilled_intel['summary']}[/dim]")
+
+                            # Frontier Cognitive Architecture: Update Defense, Scratchpad & ToT
+                            detected_defense = defense_evasion.analyze_response_for_defense(tool_name, result_str)
+                            if detected_defense:
+                                console.print(f"[bold yellow]🛡️ Defense Evasion Detected: {detected_defense.upper()} (Chuyển sang chế độ {defense_evasion.stealth_level})[/bold yellow]")
+                            cognitive_scratchpad.update_from_tool_result(tool_name, arguments, result_str)
+                            if report_state and report_state.attack_surface:
+                                active_techs = list(report_state.attack_surface.detected_technologies)
+                                open_ports_list = [p for p in report_state.attack_surface.detected_ports]
+                                tot_engine.seed_from_target_and_tech(target=target_raw_str, tech_stack=active_techs, open_ports=open_ports_list)
     
                             # RAG Memory: Ingest Recon Intelligence (Checkpoint 1 & 2)
                             if vector_memory and tool_status == "SUCCESS" and distilled_intel.get("summary") and distilled_intel["summary"] != "Không có dấu hiệu đặc biệt.":
@@ -3088,6 +3143,19 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                     # Process new findings
                                     new_findings = []
                                     for f_data in filtered_findings:
+                                        f_title = f_data.get("title", "Untitled")
+                                        f_desc = f_data.get("description", "")
+                                        critic_verdict = cognitive_critic.evaluate_finding(
+                                            f_title, f_desc, tool_name, result_str
+                                        )
+                                        if critic_verdict.is_false_positive:
+                                            console.print(
+                                                f"[bold red]🚫 SKEPTIC CRITIC VETO:[/bold red] "
+                                                f"Loại bỏ False Positive: [yellow]{f_title}[/yellow] ({critic_verdict.reason})"
+                                            )
+                                            cognitive_scratchpad.add_refuted_path(f_title, critic_verdict.reason)
+                                            continue
+
                                         cve = (f_data.get("cve_id") or "").strip()
                                         if not cve:
                                             cve_match = _RE_CVE_PATTERN.search(f"{f_data.get('title', '')} {f_data.get('description', '')} {result_str}")
@@ -3107,6 +3175,10 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                         )
                                         report_state.add_finding(finding)
                                         new_findings.append(finding)
+                                        cognitive_scratchpad.add_verified_fact("Vulnerability", f"{finding.title} [{finding.severity}]", confidence=0.95, source_tool=tool_name)
+                                        active_node = tot_engine.get_active_vector()
+                                        if active_node:
+                                            tot_engine.mark_vector_confirmed(active_node.node_id, finding.title)
     
                                     # Update risk score (only on non-capability check)
                                     new_risk = reporter_result.get("risk_score", 0)
@@ -3235,6 +3307,21 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                     "reason": pivot_info["reason"],
                                 })
                                 report_state.add_suggestion(f"Chuyển hướng chiến thuật sang '{pivot_info['pivot_tool']}': {pivot_info['reason']}")
+
+                            # Tree-of-Thought Autonomous Backtracking on Tool Negative Result
+                            res_lower = result_str.lower()
+                            if tool_name == "docker_sqlmap_scan" and "do not appear to be injectable" in res_lower:
+                                bt_event = tot_engine.trigger_backtrack("VEC-WEB-SQLI", "SQL injection payloads disproven")
+                                if bt_event:
+                                    console.print(f"[bold yellow]{bt_event.guidance_message}[/bold yellow]")
+                                    messages.append({"role": "user", "content": bt_event.guidance_message})
+                            elif tool_name in ("docker_dirb_scan", "docker_ffuf") and any(k in res_lower for k in ("0 results", "not found 404")):
+                                active_v = tot_engine.get_active_vector()
+                                if active_v and active_v.category == "WEB_EXPLOIT":
+                                    bt_event = tot_engine.trigger_backtrack(active_v.node_id, "Directory enumeration yielded 0 results")
+                                    if bt_event:
+                                        console.print(f"[bold yellow]{bt_event.guidance_message}[/bold yellow]")
+                                        messages.append({"role": "user", "content": bt_event.guidance_message})
     
                             # Stagnation tracking & convergence check (Surface Expansion Aware)
                             findings_count_after = len(report_state.findings)
