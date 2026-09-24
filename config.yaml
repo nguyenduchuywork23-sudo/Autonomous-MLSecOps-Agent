@@ -33,6 +33,10 @@ agent:
   tree_of_thought: true             # Cây giả thuyết tấn công với cơ chế quay lui (Backtracking) tự động
   skeptic_critic: true              # Bộ lọc phản biện loại trừ false-positive (Soft-404, Encoded XSS)
   defense_evasion: true             # Tự động nhận diện WAF (Cloudflare/ModSec) và né tránh phòng thủ
+  cognitive_council: true           # Hội đồng chiến lược tối cao 4 chuyên gia (Offensive, Crypto, OpSec, Arbiter)
+  exploit_chaining: true            # Chuỗi khai thác đa tầng tự động liên kết rò rỉ credential/token thành vector mới
+  secret_extractor: true            # Trích xuất tín hiệu sâu, khóa bí mật, IP nội bộ và độ hỗn loạn Shannon
+  payload_mutator: true             # Tự động tiến hóa 6 họ đột biến gen payload vượt qua WAF
 
 # --- MCP Server ---
 mcp:

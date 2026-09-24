@@ -49,6 +49,10 @@ from src.utils.cognitive_scratchpad import CognitiveScratchpad
 from src.utils.tree_of_thought import TreeOfThoughtEngine, AttackVectorNode, VectorStatus, BacktrackEvent
 from src.utils.cognitive_critic import CognitiveCritic, CriticVerdict
 from src.utils.defense_evasion import DefenseEvasionEngine
+from src.utils.secret_extractor import SecretExtractor, ExtractedIntelligence
+from src.utils.exploit_chaining import ExploitChainingEngine
+from src.utils.payload_mutator import PayloadMutator
+from src.utils.cognitive_council import CognitiveCouncil, CouncilDeliberation
 
 console = Console()
 logger = logging.getLogger("orchestrator")
@@ -2484,15 +2488,19 @@ async def run_agent(prompt: str, server_script: str | None = None,
     if report_state is None:
         report_state = ReportState(target=target_raw_str, scan_mode=scan_mode, mission_objective=mission_objective)
 
-    # ━━━ Frontier Cognitive Architecture Initialization (Claude 3.7 & GPT-5 Style) ━━━
+    # ━━━ Frontier Cognitive Architecture Initialization (Claude Opus Tier) ━━━
     cognitive_scratchpad = CognitiveScratchpad(target=target_raw_str)
     tot_engine = TreeOfThoughtEngine(target=target_raw_str)
     tot_engine.seed_from_target_and_tech(target=target_raw_str)
     cognitive_critic = CognitiveCritic()
     defense_evasion = DefenseEvasionEngine()
+    secret_extractor = SecretExtractor()
+    exploit_chaining = ExploitChainingEngine()
+    payload_mutator = PayloadMutator()
+    cognitive_council = CognitiveCouncil()
     console.print(
-        "[bold cyan]🧠 Frontier Cognitive Architecture: ONLINE "
-        "(Scratchpad Memory, Tree-of-Thought Backtracking, Skeptic Critic, Anti-WAF Evasion)[/bold cyan]"
+        "[bold cyan]🏛️ Claude Opus-Tier Cognitive Architecture: ONLINE "
+        "(Council Deliberation, Multi-Hop Exploit Chaining, Secret Extractor, Genetic Mutator)[/bold cyan]"
     )
 
     # 2. Connect to MCP Server via stdio
@@ -2861,6 +2869,31 @@ async def run_agent(prompt: str, server_script: str | None = None,
                     except Exception as e:
                         logger.debug("Defense evasion prompt injection error: %s", e)
 
+                    # Dynamic Deliberative Cognitive Council (Opus Tier Synthesis)
+                    try:
+                        active_v = tot_engine.get_active_vector()
+                        council_res = cognitive_council.deliberate(
+                            report_state=report_state,
+                            active_vector_title=active_v.title if active_v else "",
+                            detected_waf=defense_evasion.active_waf,
+                            harvested_creds_count=len(exploit_chaining.harvested_credentials),
+                            harvested_tokens_count=len(exploit_chaining.active_bearer_tokens),
+                            iteration=iteration,
+                        )
+                        council_block = council_res.format_block()
+                        if not any("HỘI ĐỒNG CHIẾN LƯỢC TỐI CAO" in str(m.get("content", "")) for m in messages[-2:]):
+                            messages.append({"role": "user", "content": council_block})
+                    except Exception as e:
+                        logger.debug("Cognitive council deliberation error: %s", e)
+
+                    # Dynamic Multi-Hop Exploit Chaining Block
+                    try:
+                        chain_block = exploit_chaining.format_chain_block()
+                        if chain_block and not any("CHUỖI KHAI THÁC ĐA TẦNG" in str(m.get("content", "")) for m in messages[-2:]):
+                            messages.append({"role": "user", "content": chain_block})
+                    except Exception as e:
+                        logger.debug("Exploit chaining prompt injection error: %s", e)
+
                     try:
                         call_kwargs = {
                             "model": model,
@@ -2993,6 +3026,7 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                 detected_technologies=techs,
                             )
                             arguments = defense_evasion.adapt_tool_arguments(tool_name, arguments)
+                            arguments = exploit_chaining.enrich_tool_arguments(tool_name, arguments)
     
                             # ANTI-LOOP ENFORCEMENT: block duplicate tool+args calls
                             call_sig = f"{tool_name}::{json.dumps(arguments, sort_keys=True)}"
@@ -3103,8 +3137,27 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             cognitive_scratchpad.update_from_tool_result(tool_name, arguments, result_str)
                             if report_state and report_state.attack_surface:
                                 active_techs = list(report_state.attack_surface.detected_technologies)
-                                open_ports_list = [p for p in report_state.attack_surface.detected_ports]
+                                open_ports_list = list(getattr(report_state.attack_surface, "open_ports", []))
                                 tot_engine.seed_from_target_and_tech(target=target_raw_str, tech_stack=active_techs, open_ports=open_ports_list)
+
+                            # Claude Opus Tier: Deep Semantic Secret Extraction & Exploit Chaining
+                            try:
+                                extracted_intel = secret_extractor.extract(result_str)
+                                if extracted_intel.has_secrets or extracted_intel.hidden_endpoints or extracted_intel.developer_comments:
+                                    summary_str = extracted_intel.format_summary()
+                                    if summary_str:
+                                        console.print(f"[bold dim cyan]🔍 Latent Signal Extracted:[/bold dim cyan] {summary_str}")
+                                    new_chained_nodes = exploit_chaining.ingest_intelligence(extracted_intel, tot_engine, base_target=target_raw_str)
+                                    if new_chained_nodes:
+                                        console.print(f"[bold green]🔗 Chained Attack Vectors Created ({len(new_chained_nodes)}):[/bold green] " + ", ".join(f"`{n.node_id}`" for n in new_chained_nodes))
+                                    for cred in extracted_intel.credentials:
+                                        cognitive_scratchpad.add_verified_fact("Credentials", f"Discovered: {cred.get('user', 'user')}:{cred.get('password', '***')}", confidence=0.99, source_tool=tool_name)
+                                    for token in extracted_intel.jwt_tokens + extracted_intel.api_keys:
+                                        cognitive_scratchpad.add_verified_fact("Token", f"Discovered API/JWT Token: {token[:15]}...", confidence=0.98, source_tool=tool_name)
+                                    for ip in extracted_intel.internal_ips:
+                                        cognitive_scratchpad.add_verified_fact("Internal Infra", f"Internal IP Leaked: {ip}", confidence=0.95, source_tool=tool_name)
+                            except Exception as e:
+                                logger.debug("Secret extractor and exploit chaining error: %s", e)
     
                             # RAG Memory: Ingest Recon Intelligence (Checkpoint 1 & 2)
                             if vector_memory and tool_status == "SUCCESS" and distilled_intel.get("summary") and distilled_intel["summary"] != "Không có dấu hiệu đặc biệt.":
