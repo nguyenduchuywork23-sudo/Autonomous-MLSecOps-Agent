@@ -143,10 +143,12 @@ def _parse_args() -> argparse.Namespace:
                         help="Enable Relentless Pursuit Mode (extreme effort, zero premature surrender, maximum vector exhaustion).")
     parser.add_argument("--consolidate-memory", action="store_true", default=False,
                         help="Run Memory Consolidation Engine (cluster & merge similar attack patterns into Master Playbooks).")
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Resume assessment session from a checkpoint JSON file or session ID.")
     return parser.parse_args()
 
 
-async def _run_single_target(target: str, mode: str) -> dict:
+async def _run_single_target(target: str, mode: str, resume_checkpoint: str | None = None) -> dict:
     """Run agent against a single target and return result dict."""
     console.print(
         f"\n[bold cyan]{'='*60}[/bold cyan]\n"
@@ -176,7 +178,10 @@ async def _run_single_target(target: str, mode: str) -> dict:
     console.print(f"\n[bold {'green' if mode == 'recon' else 'red'}]{phase_label}[/bold {'green' if mode == 'recon' else 'red'}]")
 
     try:
-        result = await run_agent(prompt, scan_mode=mode)
+        if resume_checkpoint and isinstance(resume_checkpoint, str):
+            result = await run_agent(prompt, scan_mode=mode, resume_checkpoint=resume_checkpoint)
+        else:
+            result = await run_agent(prompt, scan_mode=mode)
         return {"target": target, "mode": mode.upper(), "result": result[:80] if result else "N/A"}
     except KeyboardInterrupt:
         console.print("\n[bold yellow]Scan interrupted by user.[/bold yellow]")
@@ -276,14 +281,17 @@ async def _interactive_mode() -> None:
     console.print("[bold yellow]Exiting Local MLSecOps Agent v4.0. Goodbye![/bold yellow]")
 
 
-async def _single_shot_mode(targets: list[str], mode: str) -> None:
+async def _single_shot_mode(targets: list[str], mode: str, resume_checkpoint: str | None = None) -> None:
     """Run targets in single-shot mode (no interactive prompts)."""
     console.print(BANNER)
     _print_system_info()
 
     session_results = []
     for target in targets:
-        result = await _run_single_target(target, mode)
+        if resume_checkpoint and isinstance(resume_checkpoint, str):
+            result = await _run_single_target(target, mode, resume_checkpoint=resume_checkpoint)
+        else:
+            result = await _run_single_target(target, mode)
         session_results.append(result)
 
     if session_results:
@@ -389,9 +397,37 @@ async def main() -> None:
     if not _print_health_check():
         console.print("[bold yellow]Proceeding anyway, but some tools may fail if prerequisites are missing.[/bold yellow]\n")
 
+    if args.resume and not args.target:
+        import os
+        import json
+        checkpoint_path = args.resume
+        if not os.path.exists(checkpoint_path):
+            candidate = os.path.join("data", "sessions", f"{args.resume}.json")
+            if os.path.exists(candidate):
+                checkpoint_path = candidate
+            else:
+                candidate2 = os.path.join("data", "sessions", args.resume)
+                if os.path.exists(candidate2):
+                    checkpoint_path = candidate2
+        if os.path.exists(checkpoint_path):
+            try:
+                with open(checkpoint_path, "r", encoding="utf-8") as f:
+                    cp_data = json.load(f)
+                extracted_target = cp_data.get("target")
+                if extracted_target:
+                    console.print(f"[bold green]🎯 Tự động phát hiện mục tiêu từ Checkpoint: {extracted_target}[/bold green]")
+                    await _single_shot_mode([extracted_target], cp_data.get("scan_mode", args.mode), resume_checkpoint=checkpoint_path)
+                    return
+            except Exception as e:
+                console.print(f"[bold red]Lỗi đọc checkpoint: {e}[/bold red]")
+
     if args.target:
         targets = [t.strip() for t in args.target.split(",") if t.strip()]
-        await _single_shot_mode(targets, args.mode)
+        resume_cp = getattr(args, "resume", None)
+        if resume_cp and isinstance(resume_cp, str) and resume_cp.strip():
+            await _single_shot_mode(targets, args.mode, resume_checkpoint=resume_cp.strip())
+        else:
+            await _single_shot_mode(targets, args.mode)
     else:
         await _interactive_mode()
 

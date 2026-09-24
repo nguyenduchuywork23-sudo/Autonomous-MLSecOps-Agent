@@ -670,6 +670,31 @@ HOST_REQUIRED_TOOLS = {
     "bruteforce_ssh",
 }
 
+WAF_TAMPER_MAP = {
+    "cloudflare": "between,space2comment,charencode",
+    "modsecurity": "modsecurityversioned,modsecurityzeroversioned,space2hash",
+    "aws": "between,randomcase,space2comment",
+    "cloudfront": "between,randomcase,space2comment",
+    "imperva": "appendnullbyte,between,charencode",
+    "incapsula": "appendnullbyte,between,charencode",
+    "akamai": "between,charencode,randomcase",
+    "f5": "between,space2comment",
+    "sucuri": "between,space2comment",
+    "generic": "space2comment,between",
+}
+
+
+def _get_waf_tamper_script(waf_name: str | None) -> str | None:
+    """Determine recommended sqlmap tamper script based on detected WAF."""
+    if not waf_name:
+        return None
+    lower = waf_name.lower().strip()
+    for k, script in WAF_TAMPER_MAP.items():
+        if k in lower:
+            return script
+    return "space2comment,between"
+
+
 KNOWN_TOOL_EXPECTED_PARAMS = {
     "docker_crawl_web": {"target_url", "max_depth", "max_pages"},
     "docker_scan_ports_fast": {"target"},
@@ -685,7 +710,7 @@ KNOWN_TOOL_EXPECTED_PARAMS = {
     "docker_api_docs_audit": {"target_url"},
     "docker_subdomain_takeover_audit": {"domain"},
     "docker_waf_detect": {"target_url"},
-    "docker_sqlmap_scan": {"target_url", "form_params", "risk", "level"},
+    "docker_sqlmap_scan": {"target_url", "form_params", "risk", "level", "tamper"},
     "docker_sqlmap_dump": {"target_url", "database", "table"},
     "docker_bruteforce": {"target_host", "service", "port", "username", "password", "wordlist"},
     "bruteforce_ssh": {"target_host", "port", "username", "wordlist"},
@@ -705,7 +730,7 @@ KNOWN_TOOL_EXPECTED_PARAMS = {
 }
 
 
-def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | None = None) -> dict:
+def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | None = None, detected_waf: str | None = None) -> dict:
     """Auto-correct common argument naming and formatting mistakes from the LLM.
 
     Capabilities:
@@ -714,6 +739,7 @@ def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | N
     3. Host/Domain Healing: Strips scheme/path from tools in HOST_REQUIRED_TOOLS and auto-extracts port if present.
     4. Targets List Healing: Converts list of targets to a comma-separated string for tools like docker_httpx_probe.
     5. Port/Ports Type Healing: Safely normalizes port types between int, string, and list.
+    6. WAF Tamper Evasion: Auto-injects appropriate tamper script when WAF is active and not already provided.
     """
     if not isinstance(arguments, dict):
         return arguments
@@ -749,6 +775,9 @@ def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | N
         "failure_string": ["fail_str", "failure", "fail", "error_message"],
         "severity": ["severities", "level", "sev"],
         "mode": ["fuzz_mode", "scan_mode", "type"],
+        "tamper": ["tamper_script", "tamper_scripts", "evasion", "bypass_tamper", "scripts"],
+        "risk": ["risk_level", "risk_score"],
+        "level": ["test_level", "depth_level"],
     }
 
     corrected = {}
@@ -861,6 +890,13 @@ def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | N
         elif isinstance(psval, int):
             corrected["ports"] = str(psval)
 
+    # 5. WAF Tamper Evasion Auto-Injection for SQLMap
+    if tool_name == "docker_sqlmap_scan" and detected_waf and "tamper" not in corrected:
+        tamper_script = _get_waf_tamper_script(detected_waf)
+        if tamper_script:
+            corrected["tamper"] = tamper_script
+            console.print(f"[dim magenta]🛡️ WAF Tamper script '{tamper_script}' auto-injected for '{tool_name}' (Target WAF: {detected_waf})[/dim magenta]")
+
     return corrected
 
 
@@ -915,6 +951,65 @@ def _build_tool_reference(tools_schema: list) -> str:
         tool_desc = (t.get("description", "") or "").split("\n")[0][:80]
         lines.append(f"  {t['name']}({params_str}) -- {tool_desc}")
     return "\n".join(lines)
+
+
+def _display_mission_dashboard(
+    report_state: ReportState,
+    iteration: int,
+    max_iterations: int,
+    last_tool: str = "",
+    last_duration: float = 0.0,
+    stagnation_counter: int = 0,
+) -> None:
+    """Render a real-time Tactical Mission Dashboard (HUD) using Rich."""
+    target = report_state.target or "N/A"
+    risk_label = report_state.get_overall_risk_label()
+    risk_score = report_state.risk_score
+    sev_counts = report_state.get_severity_counts()
+
+    # Risk badge color
+    risk_color = "red" if "CRITICAL" in risk_label else ("yellow" if "HIGH" in risk_label else ("cyan" if "MEDIUM" in risk_label else "green"))
+    risk_badge = f"[{risk_color} bold]{risk_label} ({risk_score:.1f}/10)[/{risk_color} bold]"
+
+    # Attack surface stats
+    surface = report_state.attack_surface
+    ports_list = sorted(surface.open_ports.keys())
+    ports_str = ", ".join(str(p) for p in ports_list[:6]) + (f" (+{len(ports_list)-6})" if len(ports_list) > 6 else "") if ports_list else "Chưa phát hiện"
+    techs_str = ", ".join(surface.detected_technologies[:4]) if surface.detected_technologies else "Chưa nhận diện"
+    waf_info = getattr(surface, "detected_waf", {})
+    waf_name = waf_info.get("primary_waf", "None") if waf_info else "None"
+
+    # Tactical queue preview
+    tactical_queue_summary = report_state.get_tactical_queue_summary() if hasattr(report_state, "get_tactical_queue_summary") else ""
+
+    dashboard_table = Table(
+        title=f"⚡ MISSION HUD — BƯỚC [{iteration}/{max_iterations}]",
+        border_style="bright_blue",
+        show_header=True,
+        header_style="bold cyan",
+    )
+    dashboard_table.add_column("Chỉ Số / Bề Mặt", style="white", min_width=22)
+    dashboard_table.add_column("Dữ Liệu Trinh Sát & Chiến Thuật Thời Gian Thực", style="bold", min_width=52)
+
+    dashboard_table.add_row("🎯 Mục tiêu & Rủi ro", f"{target} | Mức độ: {risk_badge}")
+    dashboard_table.add_row(
+        "🛡️ Lỗ hổng xác nhận",
+        f"[red bold]🔴 CRIT: {sev_counts['CRITICAL']}[/red bold] | "
+        f"[yellow bold]🟠 HIGH: {sev_counts['HIGH']}[/yellow bold] | "
+        f"[cyan bold]🟡 MED: {sev_counts['MEDIUM']}[/cyan bold] | "
+        f"[blue bold]🔵 LOW: {sev_counts['LOW']}[/blue bold] | "
+        f"[dim]Tổng: {len(report_state.findings)}[/dim]"
+    )
+    dashboard_table.add_row("🌐 Cổng mở & Dịch vụ", f"{ports_str} | WAF: [magenta]{waf_name}[/magenta]")
+    dashboard_table.add_row("🧩 Công nghệ / Endpoints", f"{techs_str} | Endpoints: {len(surface.parameterized_endpoints)}")
+
+    if tactical_queue_summary:
+        dashboard_table.add_row("⚔️ Hàng đợi tác chiến", f"[yellow]{tactical_queue_summary}[/yellow]")
+
+    if last_tool:
+        dashboard_table.add_row("⚙️ Vừa thực thi", f"[cyan]{last_tool}[/cyan] ({last_duration:.1f}s) | Stagnation: {stagnation_counter}")
+
+    console.print(dashboard_table)
 
 
 # ---------------------------------------------------------------------------
@@ -2193,7 +2288,8 @@ def _evaluate_mission_guard(
 # ---------------------------------------------------------------------------
 
 async def run_agent(prompt: str, server_script: str | None = None,
-                    scan_mode: str = "recon") -> str:
+                    scan_mode: str = "recon",
+                    resume_checkpoint: str | None = None) -> str:
     """Execute autonomous ReAct loop with real-time dual-agent collaboration.
 
     Architecture:
@@ -2208,6 +2304,7 @@ async def run_agent(prompt: str, server_script: str | None = None,
         prompt: The mission prompt for the agent.
         server_script: Path to the MCP server script (overrides config).
         scan_mode: 'recon' for reconnaissance only, 'full' for full pentest.
+        resume_checkpoint: Optional path or session ID to resume from JSON checkpoint.
     """
     # 1. Load configuration
     config = load_config()
@@ -2332,7 +2429,27 @@ async def run_agent(prompt: str, server_script: str | None = None,
     audit = AuditLogger(target_log_name)
     audit.log("session_start", {"prompt": prompt, "mode": scan_mode, "model": model, "mission": mission_objective})
 
-    report_state = ReportState(target=target_raw_str, scan_mode=scan_mode, mission_objective=mission_objective)
+    report_state = None
+    if resume_checkpoint:
+        checkpoint_path = resume_checkpoint
+        if not os.path.isabs(checkpoint_path) and not os.path.exists(checkpoint_path):
+            candidate = os.path.join(base_dir, "data", "sessions", f"{resume_checkpoint}.json")
+            if os.path.exists(candidate):
+                checkpoint_path = candidate
+            else:
+                candidate2 = os.path.join(base_dir, "data", "sessions", resume_checkpoint)
+                if os.path.exists(candidate2):
+                    checkpoint_path = candidate2
+        if os.path.exists(checkpoint_path):
+            console.print(f"[bold green]♻️ KHÔI PHỤC PHIÊN QUÉT TỪ CHECKPOINT: {checkpoint_path}[/bold green]")
+            try:
+                report_state = ReportState.load_checkpoint(checkpoint_path)
+                audit.log("session_resumed", {"checkpoint": checkpoint_path, "findings_count": len(report_state.findings)})
+            except Exception as e:
+                console.print(f"[bold red]❌ Lỗi tải checkpoint: {e}. Khởi tạo phiên mới.[/bold red]")
+
+    if report_state is None:
+        report_state = ReportState(target=target_raw_str, scan_mode=scan_mode, mission_objective=mission_objective)
 
     # 2. Connect to MCP Server via stdio
     async with stdio_client(server_params) as (read_stream, write_stream):
@@ -2791,8 +2908,10 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                 else:
                                     arguments = {"target": target_url}
                                 logger.info("Auto-injected target into empty args for %s", tool_name)
-                            # Auto-correct argument names BEFORE anti-loop check
-                            arguments = _normalize_tool_args(tool_name, arguments, tools_schema)
+                            # Auto-correct argument names and inject WAF evasion tamper BEFORE anti-loop check
+                            waf_info = getattr(report_state.attack_surface, "detected_waf", {}) if report_state else {}
+                            detected_waf_name = waf_info.get("primary_waf", "") if waf_info else ""
+                            arguments = _normalize_tool_args(tool_name, arguments, tools_schema, detected_waf=detected_waf_name)
     
                             # ANTI-LOOP ENFORCEMENT: block duplicate tool+args calls
                             call_sig = f"{tool_name}::{json.dumps(arguments, sort_keys=True)}"
@@ -3273,6 +3392,28 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                 )
     
                             messages.append({"role": "user", "content": tool_msg})
+
+                            # Auto-save session checkpoint after each successful step
+                            if hasattr(report_state, "save_checkpoint"):
+                                try:
+                                    sess_id = getattr(report_state, "session_id", "") or "default_session"
+                                    session_dir = os.path.join(base_dir, "data", "sessions")
+                                    os.makedirs(session_dir, exist_ok=True)
+                                    checkpoint_file = os.path.join(session_dir, f"{sess_id}.json")
+                                    report_state.save_checkpoint(checkpoint_file)
+                                except Exception as e:
+                                    logger.debug("Auto-checkpoint failed: %s", e)
+
+                            # Display Real-time Tactical Mission HUD
+                            _display_mission_dashboard(
+                                report_state=report_state,
+                                iteration=iteration,
+                                max_iterations=max_iterations,
+                                last_tool=tool_name,
+                                last_duration=tool_duration,
+                                stagnation_counter=_stagnation_counter,
+                            )
+
                             continue
     
                         elif action == "final_answer":

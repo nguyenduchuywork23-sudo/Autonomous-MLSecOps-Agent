@@ -625,6 +625,52 @@ class TestRealtimeResilienceAndArgumentHealing:
         assert session.call_count == 1  # Fast abort, didn't retry 3 times
         assert "Docker daemon is offline or unreachable" in res
 
+    def test_waf_tamper_script_resolution(self):
+        from src.client.orchestrator import _get_waf_tamper_script
+        assert _get_waf_tamper_script("Cloudflare") == "between,space2comment,charencode"
+        assert _get_waf_tamper_script("ModSecurity OWASP CRS") == "modsecurityversioned,modsecurityzeroversioned,space2hash"
+        assert _get_waf_tamper_script("AWS WAF / CloudFront") == "between,randomcase,space2comment"
+        assert _get_waf_tamper_script(None) is None
+
+    def test_normalize_tool_args_waf_tamper_injection(self):
+        from src.client.orchestrator import _normalize_tool_args
+        args = {"target_url": "http://example.com/item?id=1"}
+        normalized = _normalize_tool_args("docker_sqlmap_scan", args, detected_waf="Cloudflare")
+        assert "tamper" in normalized
+        assert normalized["tamper"] == "between,space2comment,charencode"
+
+        # Explicit tamper provided by user should not be overridden
+        args_explicit = {"target_url": "http://example.com/item?id=1", "tamper": "custom_script"}
+        normalized_explicit = _normalize_tool_args("docker_sqlmap_scan", args_explicit, detected_waf="Cloudflare")
+        assert normalized_explicit["tamper"] == "custom_script"
+
+    def test_display_mission_dashboard_render(self):
+        from src.client.orchestrator import _display_mission_dashboard
+        from src.client.report_state import ReportState, Finding
+        state = ReportState(target="http://testphp.vulnweb.com", scan_mode="full")
+        state.attack_surface.open_ports[80] = {"service": "http"}
+        state.attack_surface.detected_waf = {"primary_waf": "Cloudflare"}
+        state.add_finding(Finding(
+            title="Dashboard Test SQLi",
+            severity="HIGH",
+            description="d",
+            impact="i",
+            remediation="r",
+            tool_source="docker_sqlmap_scan",
+            raw_evidence="e",
+        ))
+        state.register_discovered_service(80, "http")
+
+        # Must execute without errors
+        _display_mission_dashboard(
+            report_state=state,
+            iteration=2,
+            max_iterations=15,
+            last_tool="docker_sqlmap_scan",
+            last_duration=1.8,
+            stagnation_counter=0,
+        )
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

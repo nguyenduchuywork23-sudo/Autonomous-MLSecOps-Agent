@@ -47,6 +47,11 @@ class TestMainArgParsing:
             args = main._parse_args()
             assert args.check is True
 
+    def test_resume_flag(self):
+        with patch.object(sys, "argv", ["main.py", "--resume", "sess_20260924_test"]):
+            args = main._parse_args()
+            assert args.resume == "sess_20260924_test"
+
 
 class TestMainDispatch:
     @pytest.mark.asyncio

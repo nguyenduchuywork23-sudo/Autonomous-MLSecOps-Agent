@@ -287,4 +287,54 @@ class TestReportState:
         assert "CWE-22" in md
         assert "## 10. KẾT LUẬN & KIỂM TOÁN" in md
 
+    def test_service_discovery_and_tactical_queue(self):
+        """Should register discovered services and enqueue tactical attack actions."""
+        self.state.register_discovered_service(21, "ftp", host="ftp.test.com")
+        self.state.register_discovered_service(3306, "mysql", host="db.test.com")
+
+        assert 21 in self.state.discovered_services
+        assert 3306 in self.state.discovered_services
+        assert len(self.state.tactical_action_queue) > 0
+
+        # Verify summary contains queued tools
+        summary = self.state.get_tactical_queue_summary()
+        assert "Hàng đợi tác chiến chuyên sâu" in summary
+        assert "docker_bruteforce" in summary
+
+        # Pop next tactical action
+        next_action = self.state.get_next_tactical_action()
+        assert next_action is not None
+        assert "tool" in next_action
+        assert "port" in next_action
+
+    def test_checkpoint_save_and_load(self, tmp_path):
+        """Should save and load complete ReportState checkpoint."""
+        self.state.session_id = "test_sess_001"
+        self.state.add_finding(Finding(
+            title="SQL Injection Checkpoint Test",
+            severity="CRITICAL",
+            description="Found SQLi",
+            impact="Data leak",
+            remediation="Parameterized queries",
+            tool_source="docker_sqlmap_scan",
+            raw_evidence="SELECT * FROM users",
+        ))
+        self.state.register_discovered_service(8080, "http-proxy")
+        self.state.attack_surface.open_ports[8080] = {"service": "http-proxy"}
+
+        checkpoint_file = str(tmp_path / "test_session.json")
+        self.state.save_checkpoint(checkpoint_file)
+
+        # Load checkpoint
+        loaded = ReportState.load_checkpoint(checkpoint_file)
+        assert loaded.session_id == "test_sess_001"
+        assert loaded.target == self.state.target
+        assert len(loaded.findings) == 1
+        assert loaded.findings[0].title == "SQL Injection Checkpoint Test"
+        assert loaded.findings[0].severity == "CRITICAL"
+        assert 8080 in loaded.discovered_services
+        assert 8080 in loaded.attack_surface.open_ports
+        assert len(loaded.tactical_action_queue) > 0
+
+
 

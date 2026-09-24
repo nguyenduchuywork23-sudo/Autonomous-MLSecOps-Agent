@@ -371,25 +371,41 @@ def docker_nuclei_scan(target_url: str) -> str:
 # ===========================================================================
 
 @mcp.tool()
-def docker_sqlmap_scan(target_url: str) -> str:
+def docker_sqlmap_scan(target_url: str, form_params: str = "", risk: int = 2, level: int = 2, tamper: str = "") -> str:
     """Test the target URL for SQL injection vulnerabilities using SQLmap.
 
     Runs in full-auto beast mode: crawls 1 level deep, tests all forms,
     uses random User-Agent, level 2 / risk 2 for aggressive detection.
+    Supports optional form_params, level/risk overrides, and tamper scripts for WAF bypass.
 
     Args:
         target_url: Target URL (e.g., http://target.com or http://target.com/page?id=1).
+        form_params: Optional POST data string (e.g., 'username=admin&pass=123').
+        risk: Risk level 1-3 (default: 2).
+        level: Testing level 1-5 (default: 2).
+        tamper: Comma-separated SQLmap tamper scripts for WAF bypass (e.g., 'space2comment,randomcase').
     """
     target_url = _ensure_url_scheme(target_url)
     scan_timeout = _get_timeout("sqlmap", 300)
+    cmd = [
+        "docker", "run", "--rm", "secsi/sqlmap",
+        "-u", target_url,
+        "--batch", "--random-agent",
+        "--crawl=1", "--forms",
+        f"--level={max(1, min(int(level or 2), 5))}",
+        f"--risk={max(1, min(int(risk or 2), 3))}",
+    ]
+    if form_params and str(form_params).strip():
+        cmd.extend(["--data", str(form_params).strip()])
+    if tamper and str(tamper).strip():
+        clean_tamper = re.sub(r'[^a-zA-Z0-9_,]', '', str(tamper).strip())
+        if clean_tamper:
+            cmd.extend(["--tamper", clean_tamper])
+    cmd.append("--dbs")
+
     try:
         result = subprocess.run(
-            ["docker", "run", "--rm", "secsi/sqlmap",
-             "-u", target_url,
-             "--batch", "--random-agent",
-             "--crawl=1", "--forms",
-             "--level=2", "--risk=2",
-             "--dbs"],
+            cmd,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=scan_timeout,
         )
     except FileNotFoundError:
@@ -412,6 +428,7 @@ def docker_sqlmap_scan(target_url: str) -> str:
         "injectable_params": injectable,
         "databases": databases,
     })
+
 
 
 # ===========================================================================

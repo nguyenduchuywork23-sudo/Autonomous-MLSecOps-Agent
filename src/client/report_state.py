@@ -10,6 +10,7 @@ Used by:
 """
 
 import json
+import os
 import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -22,6 +23,83 @@ _RE_PORT_LINE = re.compile(r'(?:port\s+|open\s+port\s+)?(\d{1,5})/(?:tcp|udp)\s+
 _RE_HTTP_URL = re.compile(r'https?://[^\s"\'<>]+')
 _RE_WHATWEB_TECH = re.compile(r'([A-Za-z0-9_\-]+)(?:\[[^\]]*\])')
 _RE_SUBDOMAIN = re.compile(r'\b(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b')
+
+# ---------------------------------------------------------------------------
+# Service-Specific Attack Chains & Exploit Mapping
+# ---------------------------------------------------------------------------
+SERVICE_ATTACK_CHAINS = {
+    21: {
+        "service": "ftp",
+        "name": "FTP Service",
+        "chains": ["docker_bruteforce"],
+        "priority": "HIGH",
+        "description": "Kiểm tra brute-force hoặc anonymous login FTP",
+    },
+    22: {
+        "service": "ssh",
+        "name": "SSH Remote Access",
+        "chains": ["bruteforce_ssh", "docker_bruteforce"],
+        "priority": "HIGH",
+        "description": "Kiểm tra xác thực SSH mật khẩu yếu với tài khoản root/admin",
+    },
+    25: {
+        "service": "smtp",
+        "name": "SMTP Mail Server",
+        "chains": ["docker_scan_ports_deep"],
+        "priority": "LOW",
+        "description": "Kiểm tra Open Relay hoặc user enumeration",
+    },
+    80: {
+        "service": "http",
+        "name": "HTTP Web Application",
+        "chains": ["docker_whatweb", "docker_crawl_web", "docker_nikto_scan", "docker_nuclei_scan", "docker_dirb_scan"],
+        "priority": "CRITICAL",
+        "description": "Trinh sát công nghệ, thu thập đường dẫn và rà quét lỗ hổng Web",
+    },
+    443: {
+        "service": "https",
+        "name": "HTTPS Secure Web Application",
+        "chains": ["docker_ssl_cert_audit", "docker_testssl", "docker_whatweb", "docker_crawl_web", "docker_nuclei_scan"],
+        "priority": "CRITICAL",
+        "description": "Kiểm toán SSL/TLS cipher, chứng chỉ và rà quét Web",
+    },
+    3306: {
+        "service": "mysql",
+        "name": "MySQL Database",
+        "chains": ["docker_bruteforce"],
+        "priority": "CRITICAL",
+        "description": "Kiểm tra kết nối và brute-force tài khoản root MySQL bị lộ ra Internet",
+    },
+    5432: {
+        "service": "postgresql",
+        "name": "PostgreSQL Database",
+        "chains": ["docker_bruteforce"],
+        "priority": "CRITICAL",
+        "description": "Kiểm tra xác thực database PostgreSQL từ xa",
+    },
+    6379: {
+        "service": "redis",
+        "name": "Redis In-Memory Store",
+        "chains": ["docker_bruteforce"],
+        "priority": "CRITICAL",
+        "description": "Kiểm tra Redis Unauthenticated Remote Code Execution",
+    },
+    8080: {
+        "service": "http-proxy/alt",
+        "name": "Alternative HTTP Service",
+        "chains": ["docker_whatweb", "docker_crawl_web", "docker_api_docs_audit", "docker_nuclei_scan"],
+        "priority": "HIGH",
+        "description": "Rà quét cổng Web phụ, API backend hoặc Admin panel",
+    },
+    8443: {
+        "service": "https-alt",
+        "name": "Alternative HTTPS Service",
+        "chains": ["docker_ssl_cert_audit", "docker_whatweb", "docker_crawl_web", "docker_nuclei_scan"],
+        "priority": "HIGH",
+        "description": "Kiểm tra Web quản trị bảo mật trên cổng phụ",
+    },
+}
+
 
 
 @dataclass
@@ -316,10 +394,14 @@ class ReportState:
         self.target_objective = self.mission_objective  # Compatibility alias
         self.start_time = datetime.now()
         self.end_time: Optional[datetime] = None
+        self.session_id: str = f"sess_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
 
         # Attack Surface & Tactical Graph
         self.attack_surface: AttackSurfaceGraph = AttackSurfaceGraph()
         self._correlating: bool = False
+        self.discovered_services: dict[int, dict] = {}
+        self.tactical_action_queue: list[dict] = []
+        self._enqueued_action_keys: set[str] = set()
 
         # Deep Target Auto-Disambiguation
         self._auto_disambiguate_target()
@@ -366,6 +448,8 @@ class ReportState:
         if parsed.port:
             svc = "https" if (parsed.scheme == "https" or parsed.port in (443, 8443)) else "http"
             self.attack_surface.open_ports[parsed.port] = {"service": svc, "deep_scanned": False}
+            self.register_discovered_service(parsed.port, svc, host=parsed.hostname or target_clean)
+
 
         # 2. Parameterized endpoint disambiguation
         if parsed.query and "=" in parsed.query:
@@ -982,6 +1066,7 @@ class ReportState:
                                 self.attack_surface.open_ports[p_num] = {"service": p_svc, "deep_scanned": is_deep}
                             elif is_deep:
                                 self.attack_surface.open_ports[p_num]["deep_scanned"] = True
+                            self.register_discovered_service(p_num, p_svc, host=arg_target)
             except Exception:
                 pass
 
@@ -993,6 +1078,8 @@ class ReportState:
                     self.attack_surface.open_ports[p_num] = {"service": p_svc, "deep_scanned": is_deep}
                 elif is_deep:
                     self.attack_surface.open_ports[p_num]["deep_scanned"] = True
+                self.register_discovered_service(p_num, p_svc, host=arg_target)
+
 
         # 2. Web Crawling & Parameter Discovery (docker_crawl_web)
         if tool_name == "docker_crawl_web":
@@ -1697,6 +1784,11 @@ class ReportState:
 
         if not latest_findings and not latest_suggestion and not top_actions:
             lines.append("✅ Không phát hiện mới từ bước này.")
+
+        # Next-action tactical queue for discovered services
+        queue_summary = self.get_tactical_queue_summary()
+        if queue_summary:
+            lines.append(f"🔌 {queue_summary}")
 
         return "\n".join(lines)
 
@@ -2453,4 +2545,220 @@ class ReportState:
         ])
 
         return "\n".join(lines)
+
+    # ---------------------------------------------------------------
+    # Service Discovery & Next-Action Tactical Queue
+    # ---------------------------------------------------------------
+
+    def register_discovered_service(self, port: int, service_name: str = "", host: str = "") -> None:
+        """Register a discovered open port/service and enqueue recommended tactical exploit actions."""
+        if not port or port <= 0:
+            return
+        clean_svc = (service_name or "unknown").lower().strip()
+        chain_info = SERVICE_ATTACK_CHAINS.get(port)
+        if not chain_info:
+            for p_key, c_info in SERVICE_ATTACK_CHAINS.items():
+                if c_info["service"] in clean_svc or clean_svc in c_info["service"]:
+                    chain_info = c_info
+                    break
+
+        if not hasattr(self, "discovered_services"):
+            self.discovered_services = {}
+        if not hasattr(self, "tactical_action_queue"):
+            self.tactical_action_queue = []
+        if not hasattr(self, "_enqueued_action_keys"):
+            self._enqueued_action_keys = set()
+
+        if port not in self.discovered_services:
+            self.discovered_services[port] = {
+                "port": port,
+                "service": clean_svc,
+                "host": host or self.target,
+                "registered_at": datetime.now().strftime("%H:%M:%S"),
+                "name": chain_info["name"] if chain_info else f"Service on {port}",
+            }
+
+        if chain_info:
+            for tool in chain_info["chains"]:
+                action_key = f"{tool}::{port}"
+                if action_key not in self._enqueued_action_keys:
+                    self._enqueued_action_keys.add(action_key)
+                    self.tactical_action_queue.append({
+                        "tool": tool,
+                        "port": port,
+                        "service": chain_info["service"],
+                        "priority": chain_info["priority"],
+                        "description": chain_info["description"],
+                        "target": host or self.target,
+                    })
+
+    def get_next_tactical_action(self) -> dict | None:
+        """Pop the next highest priority action from the queue."""
+        if not hasattr(self, "tactical_action_queue") or not self.tactical_action_queue:
+            return None
+        return self.tactical_action_queue.pop(0)
+
+    def get_tactical_queue_summary(self) -> str:
+        """Return a compact tactical summary of actions queued for discovered services."""
+        if not hasattr(self, "tactical_action_queue") or not self.tactical_action_queue:
+            return ""
+        items = []
+        for a in self.tactical_action_queue[:4]:
+            items.append(f"{a['tool']}(p{a['port']})")
+        return f"Hàng đợi tác chiến chuyên sâu: {', '.join(items)}"
+
+    # ---------------------------------------------------------------
+    # Session Serialization & Checkpointing
+    # ---------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize complete ReportState into a dictionary for reports and checkpoints."""
+        start_str = self.start_time.strftime("%d/%m/%Y %H:%M:%S") if isinstance(self.start_time, datetime) else str(self.start_time or "N/A")
+        end_str = self.end_time.strftime("%d/%m/%Y %H:%M:%S") if isinstance(self.end_time, datetime) else "N/A"
+        duration_str = str(self.end_time - self.start_time).split(".")[0] if (isinstance(self.end_time, datetime) and isinstance(self.start_time, datetime)) else "N/A"
+
+        return {
+            "session_id": getattr(self, "session_id", ""),
+            "target": self.target,
+            "scan_mode": self.scan_mode,
+            "mission_objective": self.mission_objective,
+            "start_time": start_str,
+            "end_time": end_str,
+            "duration": duration_str,
+            "executive_summary": self.executive_summary,
+            "findings": [asdict(f) for f in self.findings],
+            "compound_threats": [asdict(f) for f in self.findings if "[CHUỖI TẤN CÔNG]" in f.title or "compound" in f.title.lower()],
+            "methodology": [asdict(s) for s in self.methodology],
+            "risk_score": self.risk_score,
+            "risk_label": self.get_overall_risk_label(),
+            "severity_counts": self.get_severity_counts(),
+            "recommendations": list(self.recommendations),
+            "prioritized_roadmap": self.get_prioritized_roadmap() if hasattr(self, "get_prioritized_roadmap") else [],
+            "conclusion": self.conclusion,
+            "total_iterations": self.total_iterations,
+            "red_teamer_final_answer": self.red_teamer_final_answer,
+            "attack_surface": self.attack_surface.to_dict() if hasattr(self.attack_surface, "to_dict") else asdict(self.attack_surface),
+            "goal_progress": self.calculate_goal_progress() if hasattr(self, "calculate_goal_progress") else 100,
+            "milestones": [m.to_dict() for m in self.milestones] if self.milestones else [],
+            "rag_applied_patterns": self.rag_applied_patterns,
+            "rag_stored_patterns": self.rag_stored_patterns,
+            "owasp_breakdown": self.get_owasp_breakdown() if hasattr(self, "get_owasp_breakdown") else {},
+            "mitre_breakdown": self.get_mitre_breakdown() if hasattr(self, "get_mitre_breakdown") else {},
+            "attack_graph_summary": self.generate_attack_graph().to_summary_dict() if hasattr(self, "generate_attack_graph") else {},
+            "attack_graph_mermaid": self.generate_attack_graph().to_mermaid() if hasattr(self, "generate_attack_graph") else "",
+            "discovered_services": {str(k): v for k, v in getattr(self, "discovered_services", {}).items()},
+            "tactical_action_queue": getattr(self, "tactical_action_queue", []),
+            "reporter_suggestions": list(self.reporter_suggestions),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReportState":
+        """Reconstruct ReportState from a dictionary."""
+        target = data.get("target", "")
+        scan_mode = data.get("scan_mode", "recon")
+        mission_obj = data.get("mission_objective", "")
+        rs = cls(target=target, scan_mode=scan_mode, mission_objective=mission_obj)
+
+        if data.get("session_id"):
+            rs.session_id = data["session_id"]
+        if data.get("start_time") and data["start_time"] != "N/A":
+            try:
+                rs.start_time = datetime.fromisoformat(data["start_time"])
+            except Exception:
+                try:
+                    rs.start_time = datetime.strptime(data["start_time"], "%d/%m/%Y %H:%M:%S")
+                except Exception:
+                    pass
+        if data.get("end_time") and data["end_time"] != "N/A":
+            try:
+                rs.end_time = datetime.fromisoformat(data["end_time"])
+            except Exception:
+                try:
+                    rs.end_time = datetime.strptime(data["end_time"], "%d/%m/%Y %H:%M:%S")
+                except Exception:
+                    pass
+
+        rs.total_iterations = data.get("total_iterations", 0)
+        rs.risk_score = float(data.get("risk_score", 0.0))
+        rs.executive_summary = data.get("executive_summary", "")
+        rs.conclusion = data.get("conclusion", "")
+        rs.red_teamer_final_answer = data.get("red_teamer_final_answer", "")
+        rs.recommendations = data.get("recommendations", [])
+        rs.reporter_suggestions = data.get("reporter_suggestions", [])
+        rs.rag_applied_patterns = data.get("rag_applied_patterns", [])
+        rs.rag_stored_patterns = data.get("rag_stored_patterns", [])
+
+        # Reconstruct attack surface
+        as_data = data.get("attack_surface", {})
+        if as_data:
+            open_ports = {int(k): v for k, v in as_data.get("open_ports", {}).items() if str(k).isdigit()}
+            rs.attack_surface = AttackSurfaceGraph(
+                open_ports=open_ports,
+                parameterized_endpoints=as_data.get("parameterized_endpoints", {}),
+                login_forms=as_data.get("login_forms", []),
+                detected_technologies=as_data.get("detected_technologies", []),
+                subdomains=as_data.get("subdomains", []),
+                tested_vectors=as_data.get("tested_vectors", []),
+                exposed_sensitive_files=as_data.get("exposed_sensitive_files", []),
+                alive_subdomains=as_data.get("alive_subdomains", []),
+                cors_issues=as_data.get("cors_issues", []),
+                ssl_cert_info=as_data.get("ssl_cert_info", {}),
+                dns_security_info=as_data.get("dns_security_info", {}),
+                hidden_discovered_paths=as_data.get("hidden_discovered_paths", []),
+                cookie_issues=as_data.get("cookie_issues", []),
+                security_headers_info=as_data.get("security_headers_info", {}),
+                exposed_api_docs=as_data.get("exposed_api_docs", []),
+                dangling_cnames=as_data.get("dangling_cnames", []),
+                detected_waf=as_data.get("detected_waf", {}),
+            )
+
+        # Reconstruct findings
+        rs.findings = []
+        rs._finding_index = {}
+        for f_dict in data.get("findings", []):
+            try:
+                f = Finding(**f_dict)
+                rs.add_finding(f)
+            except Exception:
+                pass
+
+        # Reconstruct methodology steps
+        rs.methodology = []
+        for s_dict in data.get("methodology", []):
+            try:
+                step = ToolStep(**s_dict)
+                rs.methodology.append(step)
+            except Exception:
+                pass
+
+        # Reconstruct milestones
+        if data.get("milestones"):
+            rs.milestones = []
+            for m_dict in data.get("milestones", []):
+                try:
+                    m = ObjectiveMilestone(**m_dict)
+                    rs.milestones.append(m)
+                except Exception:
+                    pass
+
+        # Reconstruct discovered services & tactical queue
+        rs.discovered_services = {int(k): v for k, v in data.get("discovered_services", {}).items() if str(k).isdigit()}
+        rs.tactical_action_queue = data.get("tactical_action_queue", [])
+        rs._enqueued_action_keys = {f"{a.get('tool')}::{a.get('port')}" for a in rs.tactical_action_queue}
+
+        return rs
+
+    def save_checkpoint(self, filepath: str) -> None:
+        """Save state checkpoint to a JSON file."""
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+
+    @classmethod
+    def load_checkpoint(cls, filepath: str) -> "ReportState":
+        """Load state checkpoint from a JSON file."""
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return cls.from_dict(data)
+
 
