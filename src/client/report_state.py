@@ -128,6 +128,9 @@ class Finding:
     mitre_tactics: list[str] = field(default_factory=list)
     mitre_techniques: list[str] = field(default_factory=list)
 
+    patch_diff: str = ""
+    sandbox_verified: bool = False
+
     # Valid severity levels (ordered by priority)
     SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 
@@ -188,6 +191,17 @@ class Finding:
             try:
                 rem_info = generate_remediation_snippet(self.title, self.owasp_category, self.cve_id)
                 self.remediation_code = rem_info.get("code", "")
+            except Exception:
+                pass
+
+        # Autonomous Patch Synthesizer & Code-Level Hotfix Sandbox
+        if not self.patch_diff:
+            try:
+                from src.utils.patch_sandbox import PatchSynthesizer
+                patch_synth = PatchSynthesizer()
+                patch_res = patch_synth.synthesize_patch(self.title, self.description, self.raw_evidence)
+                self.patch_diff = patch_res.unified_diff
+                self.sandbox_verified = patch_res.sandbox_verified
             except Exception:
                 pass
 

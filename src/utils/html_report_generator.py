@@ -85,6 +85,8 @@ def generate_html_report(report_data: dict[str, Any], output_path: str | None = 
         f_owasp = html.escape(str(f.get("owasp_category", "A05:2021 - Security Misconfiguration")))
         f_evidence = html.escape(str(f.get("raw_evidence", "")))
         f_rem_code = html.escape(str(f.get("remediation_code", "")))
+        f_patch_diff = html.escape(str(f.get("patch_diff", "")))
+        f_verified = "ĐÃ XÁC THỰC SANDBOX" if f.get("sandbox_verified") else "CHỜ DUYỆT"
 
         sev_class = f_sev.lower()
 
@@ -134,6 +136,16 @@ def generate_html_report(report_data: dict[str, Any], output_path: str | None = 
                     <pre><code id="code-{idx}">{f_rem_code}</code></pre>
                 </div>
                 ''' if f_rem_code else ''}
+
+                {f'''
+                <div class="section-block code-block-wrap">
+                    <div class="code-header">
+                        <span class="code-title">🛠️ Bản Vá Tự Động Unified Git Diff [{f_verified}]:</span>
+                        <button class="btn-copy" onclick="copySnippet('diff-{idx}')">Sao Chép Patch</button>
+                    </div>
+                    <pre><code id="diff-{idx}">{f_patch_diff}</code></pre>
+                </div>
+                ''' if f_patch_diff else ''}
 
                 {f'''
                 <div class="section-block">

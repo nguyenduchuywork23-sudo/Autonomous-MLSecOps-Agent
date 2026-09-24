@@ -53,6 +53,10 @@ from src.utils.secret_extractor import SecretExtractor, ExtractedIntelligence
 from src.utils.exploit_chaining import ExploitChainingEngine
 from src.utils.payload_mutator import PayloadMutator
 from src.utils.cognitive_council import CognitiveCouncil, CouncilDeliberation
+from src.utils.mcts_simulator import MCTSCyberSimulator, MCTSSimulationResult
+from src.utils.api_logic_fuzzer import APILogicFuzzer, APILogicFuzzTarget
+from src.utils.waf_fingerprinter import WAFFingerprinter, BlockedTokenAnalysis
+from src.utils.patch_sandbox import PatchSynthesizer, PatchDiffResult
 
 console = Console()
 logger = logging.getLogger("orchestrator")
@@ -2498,9 +2502,13 @@ async def run_agent(prompt: str, server_script: str | None = None,
     exploit_chaining = ExploitChainingEngine()
     payload_mutator = PayloadMutator()
     cognitive_council = CognitiveCouncil()
+    mcts_simulator = MCTSCyberSimulator()
+    api_fuzzer = APILogicFuzzer()
+    waf_fingerprinter = WAFFingerprinter()
+    patch_synthesizer = PatchSynthesizer()
     console.print(
-        "[bold cyan]🏛️ Claude Opus-Tier Cognitive Architecture: ONLINE "
-        "(Council Deliberation, Multi-Hop Exploit Chaining, Secret Extractor, Genetic Mutator)[/bold cyan]"
+        "[bold cyan]⚡ Superhuman Autonomous Cyber Intelligence: ONLINE "
+        "(MCTS Lookahead Simulator, API Logic Fuzzer, WAF Decompiler, Patch Sandbox)[/bold cyan]"
     )
 
     # 2. Connect to MCP Server via stdio
@@ -2894,6 +2902,30 @@ async def run_agent(prompt: str, server_script: str | None = None,
                     except Exception as e:
                         logger.debug("Exploit chaining prompt injection error: %s", e)
 
+                    # Dynamic MCTS Cyber Lookahead Simulation (Monte Carlo Tree Search)
+                    try:
+                        curr_ports = list(getattr(report_state.attack_surface, "open_ports", {}).keys())
+                        curr_state = {
+                            "open_ports": curr_ports,
+                            "detected_tech": getattr(report_state.attack_surface, "detected_technologies", []),
+                            "active_waf": defense_evasion.active_waf,
+                            "harvested_creds": exploit_chaining.harvested_credentials,
+                            "findings_count": len(report_state.findings),
+                            "executed_tools": [s.tool_name for s in report_state.methodology[-10:]],
+                            "target": target_raw_str,
+                        }
+                        mcts_res = mcts_simulator.simulate(
+                            available_tools=tool_names,
+                            current_state=curr_state,
+                            num_simulations=40,
+                            max_depth=3,
+                        )
+                        mcts_block = mcts_res.format_block()
+                        if not any("BỘ MÔ PHỎNG CHIẾN THUẬT MCTS LOOKAHEAD" in str(m.get("content", "")) for m in messages[-2:]):
+                            messages.append({"role": "user", "content": mcts_block})
+                    except Exception as e:
+                        logger.debug("MCTS lookahead simulation error: %s", e)
+
                     try:
                         call_kwargs = {
                             "model": model,
@@ -3134,6 +3166,38 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             detected_defense = defense_evasion.analyze_response_for_defense(tool_name, result_str)
                             if detected_defense:
                                 console.print(f"[bold yellow]🛡️ Defense Evasion Detected: {detected_defense.upper()} (Chuyển sang chế độ {defense_evasion.stealth_level})[/bold yellow]")
+
+                            # Dynamic WAF Rule Decompiler & Token Reverse-Engineering
+                            try:
+                                if detected_defense or "403" in result_str or "406" in result_str or "429" in result_str:
+                                    payload_arg = str(arguments.get("url", "") or arguments.get("target", "") or arguments.get("data", "") or "")
+                                    decompiled_waf = waf_fingerprinter.decompile_blocked_payload(payload_arg, detected_waf=defense_evasion.active_waf)
+                                    console.print(f"[bold yellow]🛡️ WAF Rule Decompiler:[/bold yellow] Quy tắc `{decompiled_waf.probable_rule_id}` (Tokens: {', '.join(decompiled_waf.blocked_tokens)})")
+                                    cognitive_scratchpad.add_refuted_path("WAF Block", f"Quy tắc {decompiled_waf.probable_rule_id} đã chặn token: {decompiled_waf.blocked_tokens}")
+                            except Exception as e:
+                                logger.debug("WAF decompiler error: %s", e)
+
+                            # Dynamic API Schema & Business Logic Fuzzer
+                            try:
+                                if tool_name in ("docker_api_docs", "docker_crawl_web", "docker_whatweb") or "/api/" in result_str or "swagger" in result_str.lower() or "openapi" in result_str.lower():
+                                    fuzz_endpoints = api_fuzzer.infer_endpoints_from_text(result_str)
+                                    if fuzz_endpoints:
+                                        fuzz_plan = api_fuzzer.generate_fuzz_plan(fuzz_endpoints)
+                                        if fuzz_plan:
+                                            console.print(f"[bold magenta]⚡ API Logic Fuzzer:[/bold magenta] Đã sinh {len(fuzz_plan)} kịch bản BOLA/IDOR/Mass Assignment")
+                                            for f_target in fuzz_plan[:2]:
+                                                tot_engine.add_vector(
+                                                    node_id=f"fuzz_{f_target.fuzz_type.lower()}_{abs(hash(f_target.url_path)) % 10000}",
+                                                    title=f"API Fuzz: {f_target.fuzz_type} on {f_target.url_path}",
+                                                    description=f_target.description,
+                                                    tool_name="docker_curl" if "docker_curl" in tool_names else "docker_ffuf_scan",
+                                                    tool_arguments={"url": f_target.url_path, "method": f_target.method},
+                                                    hypothesis="API Business logic mutation will expose authorization or parameter flaws",
+                                                    confidence=0.88,
+                                                )
+                            except Exception as e:
+                                logger.debug("API logic fuzzer error: %s", e)
+
                             cognitive_scratchpad.update_from_tool_result(tool_name, arguments, result_str)
                             if report_state and report_state.attack_surface:
                                 active_techs = list(report_state.attack_surface.detected_technologies)

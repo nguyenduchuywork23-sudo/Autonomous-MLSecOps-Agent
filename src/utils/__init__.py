@@ -10,6 +10,10 @@ from .secret_extractor import SecretExtractor, ExtractedIntelligence, calculate_
 from .exploit_chaining import ExploitChainingEngine
 from .payload_mutator import PayloadMutator
 from .cognitive_council import CognitiveCouncil, CouncilDeliberation
+from .mcts_simulator import MCTSCyberSimulator, MCTSSimulationResult, MCTSNode
+from .api_logic_fuzzer import APILogicFuzzer, APILogicFuzzTarget, APISchemaEndpoint
+from .waf_fingerprinter import WAFFingerprinter, BlockedTokenAnalysis
+from .patch_sandbox import PatchSynthesizer, PatchDiffResult, HotfixSandboxVerifier
 
 __all__ = [
     "config",
@@ -29,4 +33,15 @@ __all__ = [
     "PayloadMutator",
     "CognitiveCouncil",
     "CouncilDeliberation",
+    "MCTSCyberSimulator",
+    "MCTSSimulationResult",
+    "MCTSNode",
+    "APILogicFuzzer",
+    "APILogicFuzzTarget",
+    "APISchemaEndpoint",
+    "WAFFingerprinter",
+    "BlockedTokenAnalysis",
+    "PatchSynthesizer",
+    "PatchDiffResult",
+    "HotfixSandboxVerifier",
 ]

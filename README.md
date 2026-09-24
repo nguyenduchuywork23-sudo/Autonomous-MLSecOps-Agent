@@ -51,11 +51,38 @@ An intelligent vector database pipeline ensuring the agent remembers past attack
 * **4-Stage Retrieval Pipeline**:
   $$\text{Target Query} \xrightarrow{\text{Pre-filtering}} \text{Metadata Filters} \xrightarrow{\text{Vector Search}} \text{HNSW Top-K} \xrightarrow{\text{Re-ranking}} \text{FlashRank ONNX (MiniLM-L-12-v2)} \xrightarrow{\text{Cluster}} \text{Tactical Memory}$$
 
-### 4. Automated Multi-Format Reporting
+### 4. Automated Multi-Format Reporting & Remediation
 Automatically compiles penetration testing engagements into professional deliverables:
-* **DOCX Report**: Fully formatted report featuring an Executive Summary, Risk Matrix, CVSS v3.1 and CWE classifications, Kill-Chain Timeline, Detailed Findings with severity badges, and Prioritized Remediation Roadmaps.
+* **Interactive HTML Report**: Modern cyber dashboard with real-time CVSS v3.1 / EPSS metrics, CISA KEV badges, and one-click copyable **Actionable Code Snippets** and **Unified Git Diff Patches**.
+* **DOCX Report**: Fully formatted report featuring an Executive Summary, Risk Matrix, CVSS v3.1 and CWE classifications, Kill-Chain Timeline, Detailed Findings with severity badges, Prioritized Remediation Roadmaps, and Unified Git Diff Patches.
 * **Markdown & JSON Summaries**: Machine-readable assessment summaries for CI/CD integration.
 * **Forensic Audit Trail (`.jsonl`)**: Immutable audit logs capturing every prompt, tool execution, payload, and result timestamp for digital forensics and compliance review.
+
+### 5. Frontier Cognitive Architecture (Claude Opus & GPT-5 Astra Tier)
+An 8-tier cognitive reasoning pipeline eliminating context truncation amnesia and false positives:
+* **Cognitive Scratchpad**: Out-of-band persistent working memory buffer tracking verified facts, active hypotheses, and refuted paths across the entire campaign.
+* **Tree of Thought (ToT)**: Attack vector hypothesis tree with autonomous backtracking and dead-end pruning.
+* **Skeptic Anti-Hallucination Critic**: Skeptic verification engine filtering out Soft-404s, HTML-escaped XSS reflections, and generic 500 server errors.
+* **Dynamic Defense Evasion Engine**: Real-time WAF fingerprinting (Cloudflare, ModSecurity, AWS WAF, 429 rate-limits) and adaptive parameter tampering.
+* **Semantic De-obfuscator & Entropy Secret Extractor**: Shannon entropy secret scanner ($H(X) \ge 4.2$) extracting AWS keys, JWT tokens, DB connection strings, and internal RFC 1918 IPs from raw tool responses.
+* **Multi-Hop Exploit Chaining**: Automatically chains harvested credentials and tokens into automated SSH and API exploitation branches.
+* **Genetic Payload Mutator**: Evolves 6 mutation strategies (comment injection `/**/`, case randomization, double URL encoding `%25`, quote-less `CHAR()`, dialect time substitutions, null-byte bypasses).
+* **Multi-Persona Deliberative Cognitive Council**: 4-specialist deliberative peer-review council (Offensive Architect, Cryptographer, OpSec Director, Executive Arbiter).
+
+### 6. Superhuman Autonomous Cyber Operations Engines
+Pioneering frontier intelligence engines for high-stakes autonomous cyber operations:
+* **Monte Carlo Tree Search (MCTS) Cyber Lookahead Simulator**:
+  * Simulates 3-to-5 step future tool outcome trees with rollouts and UCT (Upper Confidence Bound for Trees) scoring.
+  * Mathematically optimizes Information Gain vs. OpSec/WAF Detection Risk before dispatching noisy tools.
+* **Grammar-Based Business Logic & API Schema Fuzzer**:
+  * Parses OpenAPI 3.0, Swagger 2.0, and GraphQL schemas.
+  * Synthesizes stateful business logic mutations: **BOLA / IDOR**, **Mass Assignment** (`role: admin`, `isAdmin: true`), **Type Confusion** (32-bit overflow `2147483647`), and **HTTP Verb Tunneling** (`X-HTTP-Method-Override`).
+* **Dynamic Defense Fingerprinting & WAF Rule Decompiler**:
+  * Pinpoints exact triggering syntax tokens when HTTP 403/406/429 occurs.
+  * Reverse-engineers regex filters into specific OWASP CRS Rule IDs (e.g. Rule 942100 SQLi, Rule 941100 XSS, Rule 932100 RCE) and generates token-level evasion matrices.
+* **Autonomous Patch Synthesizer & Code-Level Hotfix Sandbox**:
+  * Automatically translates confirmed vulnerabilities into production-ready **Unified Git Diff Patches** (`--- a/... +++ b/...`).
+  * Runs dry-run sandbox verification validating syntactic integrity, exploit neutralization, and regression freedom.
 
 ---
 
@@ -115,8 +142,21 @@ graph TD
 │   └── utils/
 │       ├── config.py           # Configuration parser & pre-flight health checks
 │       ├── vector_store.py     # Tactical Memory (RAG) & FlashRank ONNX re-ranking
+│       ├── cognitive_scratchpad.py # Persistent out-of-band working memory
+│       ├── tree_of_thought.py  # Attack hypothesis tree with backtracking
+│       ├── cognitive_critic.py # Anti-hallucination skeptic filter
+│       ├── defense_evasion.py  # WAF detection & parameter tampering
+│       ├── secret_extractor.py # Shannon entropy scanner & secret extractor
+│       ├── exploit_chaining.py # Multi-hop exploit chain synthesizer
+│       ├── payload_mutator.py  # Genetic payload mutation engine
+│       ├── cognitive_council.py # 4-specialist strategic deliberation council
+│       ├── mcts_simulator.py   # Monte Carlo Tree Search lookahead simulator
+│       ├── api_logic_fuzzer.py # Grammar-based BOLA & Mass Assignment fuzzer
+│       ├── waf_fingerprinter.py # WAF regex rule decompiler & token analyzer
+│       ├── patch_sandbox.py    # Unified Git Diff patch synthesizer & sandbox
+│       ├── html_report_generator.py # Interactive HTML cyber dashboard
 │       └── report_generator.py # Multi-format Word (.docx) & JSON report generator
-└── tests/                   # 19 comprehensive test suites (E2E, unit & integration)
+└── tests/                   # 25 comprehensive test suites (449+ passing tests, 100% pass rate)
 ```
 
 ---

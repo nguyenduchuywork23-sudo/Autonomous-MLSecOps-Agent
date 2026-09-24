@@ -1602,6 +1602,23 @@ def _build_finding_section(doc, index: int, finding: dict) -> None:
         run.font.size = Pt(9)
         run.font.color.rgb = RGBColor(0x64, 0x74, 0x8B)
 
+    # Unified Git Diff Hotfix Patch
+    patch_diff = str(finding.get("patch_diff") or "").strip()
+    if patch_diff:
+        doc.add_paragraph("")
+        patch_heading = doc.add_paragraph()
+        verified_str = "ĐÃ XÁC THỰC SANDBOX" if finding.get("sandbox_verified") else "CHỜ DUYỆT"
+        p_hdr_run = patch_heading.add_run(f"🛠️ Bản vá tự động Unified Git Diff [{verified_str}]:")
+        p_hdr_run.font.name = "Calibri"
+        p_hdr_run.font.size = Pt(10)
+        p_hdr_run.bold = True
+
+        diff_para = doc.add_paragraph()
+        d_run = diff_para.add_run(patch_diff[:1200])
+        d_run.font.name = "Consolas"
+        d_run.font.size = Pt(8.5)
+        d_run.font.color.rgb = RGBColor(0x04, 0x78, 0x57)
+
     doc.add_paragraph("")  # Spacing
 
 

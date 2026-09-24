@@ -37,6 +37,10 @@ agent:
   exploit_chaining: true            # Chuỗi khai thác đa tầng tự động liên kết rò rỉ credential/token thành vector mới
   secret_extractor: true            # Trích xuất tín hiệu sâu, khóa bí mật, IP nội bộ và độ hỗn loạn Shannon
   payload_mutator: true             # Tự động tiến hóa 6 họ đột biến gen payload vượt qua WAF
+  mcts_lookahead: true              # Mô phỏng cây Monte Carlo Tree Search dự phóng chuỗi bước tối ưu (DeepSeek-R1 / Q*)
+  api_logic_fuzzer: true            # Bộ tạo đột biến ngữ pháp OpenAPI/Swagger/GraphQL kiểm thử BOLA, IDOR & Mass Assignment
+  waf_fingerprinter: true           # Giải mã hành vi phòng thủ WAF và dịch ngược luật regex OWASP CRS
+  patch_sandbox: true               # Bộ tổng hợp bản vá Unified Git Diff và sandbox kiểm định triệt tiêu lỗ hổng
 
 # --- MCP Server ---
 mcp:
