@@ -517,8 +517,118 @@ class TestRealtimeBayesianGuidance:
         assert "Bayesian Kill-Chain" in block
 
 
+class TestRealtimeResilienceAndArgumentHealing:
+    """Tests for Real-time Argument Healing and Docker Daemon Offline resilience."""
+
+    def test_url_healing_missing_scheme_default_http(self):
+        args = {"target_url": "target.local:8080"}
+        normalized = _normalize_tool_args("docker_crawl_web", args)
+        assert normalized["target_url"] == "http://target.local:8080"
+
+    def test_url_healing_port_443_uses_https(self):
+        args = {"target_url": "target.local:443"}
+        normalized = _normalize_tool_args("docker_sqlmap_scan", args)
+        assert normalized["target_url"] == "https://target.local:443"
+
+    def test_url_healing_from_alias_target(self):
+        args = {"target": "target.local"}
+        normalized = _normalize_tool_args("docker_nikto_scan", args)
+        assert "target_url" in normalized
+        assert normalized["target_url"] == "http://target.local"
+
+    def test_host_healing_nmap_fast_strips_url_and_path(self):
+        args = {"target": "http://192.168.1.1:8080/api"}
+        normalized = _normalize_tool_args("docker_scan_ports_fast", args)
+        assert normalized["target"] == "192.168.1.1"
+
+    def test_host_healing_nmap_deep_extracts_port(self):
+        args = {"target": "http://192.168.1.1:8080/api"}
+        normalized = _normalize_tool_args("docker_scan_ports_deep", args)
+        assert normalized["target"] == "192.168.1.1"
+        assert normalized["ports"] == "8080"
+
+    def test_host_healing_ssl_audit_extracts_int_port(self):
+        args = {"target_host": "https://secure.example.com:8443/login"}
+        normalized = _normalize_tool_args("docker_ssl_cert_audit", args)
+        assert normalized["target_host"] == "secure.example.com"
+        assert normalized["port"] == 8443
+        assert isinstance(normalized["port"], int)
+
+    def test_host_healing_resolve_dns(self):
+        args = {"hostname": "https://internal.corp/dns"}
+        normalized = _normalize_tool_args("docker_resolve_dns", args)
+        assert normalized["hostname"] == "internal.corp"
+
+    def test_targets_list_healing_httpx_probe(self):
+        args = {"targets": ["http://a.com", "http://b.com"]}
+        normalized = _normalize_tool_args("docker_httpx_probe", args)
+        assert normalized["targets"] == "http://a.com,http://b.com"
+
+    def test_targets_newline_healing_httpx_probe(self):
+        args = {"targets": "http://a.com\nhttp://b.com"}
+        normalized = _normalize_tool_args("docker_httpx_probe", args)
+        assert normalized["targets"] == "http://a.com,http://b.com"
+
+    def test_port_type_healing(self):
+        args = {"target_host": "10.0.0.1", "port": "22"}
+        normalized = _normalize_tool_args("bruteforce_ssh", args)
+        assert normalized["port"] == 22
+        assert isinstance(normalized["port"], int)
+
+        args_deep = {"target": "10.0.0.1", "ports": [80, 443]}
+        normalized_deep = _normalize_tool_args("docker_scan_ports_deep", args_deep)
+        assert normalized_deep["ports"] == "80,443"
+
+    @pytest.mark.asyncio
+    async def test_retry_tool_call_docker_daemon_offline_result_fast_abort(self):
+        class MockItem:
+            def __init__(self, text):
+                self.text = text
+
+        class MockResult:
+            def __init__(self, text):
+                self.content = [MockItem(text)]
+
+        class MockDockerOfflineSession:
+            def __init__(self):
+                self.call_count = 0
+
+            async def call_tool(self, name, args):
+                self.call_count += 1
+                return MockResult(
+                    '{"error": "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?."}'
+                )
+
+        session = MockDockerOfflineSession()
+        res = await _retry_tool_call(
+            session, "docker_scan_ports_fast", {"target": "127.0.0.1"},
+            max_retries=3, delay=10.0,
+        )
+        assert session.call_count == 1  # Fast abort, didn't retry 3 times
+        assert "Cannot connect to the Docker daemon" in res
+
+    @pytest.mark.asyncio
+    async def test_retry_tool_call_docker_daemon_offline_exception_fast_abort(self):
+        class MockDockerExceptionSession:
+            def __init__(self):
+                self.call_count = 0
+
+            async def call_tool(self, name, args):
+                self.call_count += 1
+                raise RuntimeError("Error during connect: this error indicates that the docker daemon is not running")
+
+        session = MockDockerExceptionSession()
+        res = await _retry_tool_call(
+            session, "docker_scan_ports_fast", {"target": "127.0.0.1"},
+            max_retries=3, delay=10.0,
+        )
+        assert session.call_count == 1  # Fast abort, didn't retry 3 times
+        assert "Docker daemon is offline or unreachable" in res
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
 
 
 

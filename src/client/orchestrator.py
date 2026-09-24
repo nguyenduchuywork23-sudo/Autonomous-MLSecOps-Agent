@@ -20,6 +20,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 # Ensure UTF-8 output on Windows consoles to prevent UnicodeEncodeError
 if hasattr(sys.stdout, "reconfigure"):
@@ -634,25 +635,96 @@ def _extract_mission_objective(prompt: str) -> str:
     return "Toàn diện kiểm tra, trinh sát và tìm kiếm lỗ hổng trên mục tiêu."
 
 
-def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list) -> dict:
-    """Auto-correct common argument naming mistakes from the LLM.
+URL_REQUIRED_TOOLS = {
+    "docker_crawl_web",
+    "docker_sqlmap_scan",
+    "docker_sqlmap_dump",
+    "docker_cors_scan",
+    "docker_nikto_scan",
+    "docker_nuclei_scan",
+    "docker_whatweb",
+    "docker_dirb_scan",
+    "docker_ffuf",
+    "docker_sensitive_files_scan",
+    "docker_security_txt_audit",
+    "docker_api_docs_audit",
+    "docker_cookie_security_audit",
+    "docker_http_headers_audit",
+    "docker_wpscan",
+    "docker_xss_scan",
+    "bruteforce_http_form",
+    "browse_webpage",
+    "docker_waf_detect",
+}
 
-    Maps common aliases like target_url->target, target_ip->target, domain->target, etc.
+HOST_REQUIRED_TOOLS = {
+    "docker_scan_ports_fast",
+    "docker_scan_ports_deep",
+    "docker_resolve_dns",
+    "docker_subfinder",
+    "docker_testssl",
+    "docker_ssl_cert_audit",
+    "docker_dns_security_audit",
+    "docker_subdomain_takeover_audit",
+    "docker_bruteforce",
+    "bruteforce_ssh",
+}
+
+KNOWN_TOOL_EXPECTED_PARAMS = {
+    "docker_crawl_web": {"target_url", "max_depth", "max_pages"},
+    "docker_scan_ports_fast": {"target"},
+    "docker_scan_ports_deep": {"target", "ports"},
+    "docker_resolve_dns": {"hostname"},
+    "docker_subfinder": {"domain"},
+    "docker_testssl": {"target_host"},
+    "docker_ssl_cert_audit": {"target_host", "port"},
+    "docker_dns_security_audit": {"domain"},
+    "docker_security_txt_audit": {"target_url"},
+    "docker_cookie_security_audit": {"target_url"},
+    "docker_http_headers_audit": {"target_url"},
+    "docker_api_docs_audit": {"target_url"},
+    "docker_subdomain_takeover_audit": {"domain"},
+    "docker_waf_detect": {"target_url"},
+    "docker_sqlmap_scan": {"target_url", "form_params", "risk", "level"},
+    "docker_sqlmap_dump": {"target_url", "database", "table"},
+    "docker_bruteforce": {"target_host", "service", "port", "username", "password", "wordlist"},
+    "bruteforce_ssh": {"target_host", "port", "username", "wordlist"},
+    "bruteforce_http_form": {"target_url", "login_path", "username", "wordlist", "failure_string"},
+    "docker_wpscan": {"target_url"},
+    "docker_msf_search": {"cve_or_keyword"},
+    "docker_xss_scan": {"target_url"},
+    "docker_nikto_scan": {"target_url"},
+    "docker_nuclei_scan": {"target_url", "severity", "tags"},
+    "docker_dirb_scan": {"target_url", "wordlist"},
+    "docker_ffuf": {"target_url", "wordlist"},
+    "docker_sensitive_files_scan": {"target_url"},
+    "docker_cors_scan": {"target_url"},
+    "docker_httpx_probe": {"targets"},
+    "docker_whatweb": {"target_url"},
+    "browse_webpage": {"url", "max_length"},
+}
+
+
+def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | None = None) -> dict:
+    """Auto-correct common argument naming and formatting mistakes from the LLM.
+
+    Capabilities:
+    1. Key Alias Mapping: Maps common aliases like target_url->target, target_ip->target, domain->target, etc.
+    2. URL Healing: Ensures tools in URL_REQUIRED_TOOLS receive a full URL with scheme (http:// or https://).
+    3. Host/Domain Healing: Strips scheme/path from tools in HOST_REQUIRED_TOOLS and auto-extracts port if present.
+    4. Targets List Healing: Converts list of targets to a comma-separated string for tools like docker_httpx_probe.
+    5. Port/Ports Type Healing: Safely normalizes port types between int, string, and list.
     """
     if not isinstance(arguments, dict):
         return arguments
 
+    tools_schema = tools_schema or []
     tool_schema = next((t for t in tools_schema if t.get("name") == tool_name), None)
-    if not tool_schema or "input_schema" not in tool_schema:
-        return arguments
-
-    schema_props = tool_schema["input_schema"].get("properties", {})
-    expected_params = set(schema_props.keys())
-    provided_params = set(arguments.keys())
-
-    # If all provided params are expected, no correction needed
-    if provided_params.issubset(expected_params):
-        return arguments
+    if tool_schema and "input_schema" in tool_schema:
+        schema_props = tool_schema["input_schema"].get("properties", {})
+        expected_params = set(schema_props.keys())
+    else:
+        expected_params = set(KNOWN_TOOL_EXPECTED_PARAMS.get(tool_name, []))
 
     ALIASES = {
         "target": ["target_url", "url", "host", "hostname", "address", "ip", "target_ip", "target_host", "domain"],
@@ -693,7 +765,6 @@ def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list) ->
         if key in expected_params:
             continue
         mapped = False
-        # Try to find matching expected parameter
         for expected in expected_params:
             if expected in used_expected:
                 continue
@@ -710,7 +781,88 @@ def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list) ->
         if not mapped:
             corrected[key] = value
 
+    # If no expected params were defined at all, preserve arguments
+    if not expected_params and not corrected:
+        corrected = dict(arguments)
+
+    # -----------------------------------------------------------------------
+    # Value & Type Healing
+    # -----------------------------------------------------------------------
+
+    # 1. URL Healing for web tools
+    if tool_name in URL_REQUIRED_TOOLS:
+        for url_key in ("target_url", "url", "target"):
+            if url_key in corrected:
+                val = corrected[url_key]
+                if isinstance(val, str) and val.strip():
+                    raw_url = val.strip()
+                    clean_url = re.sub(r'^(https?://)+', r'\1', raw_url)
+                    if not (clean_url.startswith("http://") or clean_url.startswith("https://")):
+                        if ":443" in clean_url:
+                            healed_url = f"https://{clean_url}"
+                        else:
+                            healed_url = f"http://{clean_url}"
+                        console.print(f"[dim]🌐 URL healed for '{tool_name}': '{raw_url}' → '{healed_url}'[/dim]")
+                        corrected[url_key] = healed_url
+                    elif clean_url != raw_url:
+                        corrected[url_key] = clean_url
+                break
+
+    # 2. Host/Domain Healing for infrastructure/network tools
+    if tool_name in HOST_REQUIRED_TOOLS:
+        for host_key in ("target", "hostname", "domain", "target_host", "host", "target_domain"):
+            if host_key in corrected:
+                val = corrected[host_key]
+                if isinstance(val, str) and val.strip():
+                    raw_host = val.strip()
+                    if "://" in raw_host or "/" in raw_host or (":" in raw_host and not raw_host.startswith("[")):
+                        parse_target = raw_host if "://" in raw_host else f"http://{raw_host}"
+                        parsed = urlparse(parse_target)
+                        clean_host = parsed.hostname or raw_host.split("/")[0].split(":")[0]
+                        parsed_port = parsed.port
+                        if clean_host and clean_host != raw_host:
+                            console.print(f"[dim]🎯 Host extracted for '{tool_name}': '{raw_host}' → '{clean_host}'[/dim]")
+                            corrected[host_key] = clean_host
+
+                        if parsed_port:
+                            if "port" in expected_params and "port" not in corrected:
+                                corrected["port"] = parsed_port
+                                console.print(f"[dim]🔌 Auto-extracted port '{parsed_port}' for '{tool_name}'[/dim]")
+                            elif "ports" in expected_params and "ports" not in corrected:
+                                corrected["ports"] = str(parsed_port)
+                                console.print(f"[dim]🔌 Auto-extracted ports '{parsed_port}' for '{tool_name}'[/dim]")
+                break
+
+    # 3. Targets List Healing
+    if tool_name == "docker_httpx_probe" or "targets" in corrected:
+        if "targets" in corrected:
+            t_val = corrected["targets"]
+            if isinstance(t_val, list):
+                healed_targets = ",".join(str(item).strip() for item in t_val if str(item).strip())
+                console.print(f"[dim]📋 Targets list healed for '{tool_name}': list → '{healed_targets}'[/dim]")
+                corrected["targets"] = healed_targets
+            elif isinstance(t_val, str) and "\n" in t_val:
+                healed_targets = ",".join(part.strip() for part in t_val.split("\n") if part.strip())
+                console.print(f"[dim]📋 Targets list healed for '{tool_name}'[/dim]")
+                corrected["targets"] = healed_targets
+
+    # 4. Port/Ports Type Healing
+    if "port" in corrected:
+        pval = corrected["port"]
+        if isinstance(pval, str) and pval.strip().isdigit():
+            corrected["port"] = int(pval.strip())
+        elif isinstance(pval, list) and pval and str(pval[0]).strip().isdigit():
+            corrected["port"] = int(str(pval[0]).strip())
+
+    if "ports" in corrected:
+        psval = corrected["ports"]
+        if isinstance(psval, list):
+            corrected["ports"] = ",".join(str(p).strip() for p in psval if str(p).strip())
+        elif isinstance(psval, int):
+            corrected["ports"] = str(psval)
+
     return corrected
+
 
 
 def _normalize_semantic_target(target: str) -> str:
@@ -828,6 +980,25 @@ def _get_tool_timeout(tool_name: str) -> float:
     return float(base) + 15.0
 
 
+DOCKER_DAEMON_ERROR_PATTERNS = [
+    "cannot connect to the docker daemon",
+    "is the docker daemon running",
+    "error during connect",
+    "docker daemon is not running",
+    "docker is not running",
+    "failed to connect to docker daemon",
+    "daemon is not running",
+]
+
+
+def _is_docker_daemon_offline_error(text: str) -> bool:
+    """Check if an error message or tool output indicates Docker daemon is unreachable."""
+    if not text:
+        return False
+    lower = str(text).lower()
+    return any(p in lower for p in DOCKER_DAEMON_ERROR_PATTERNS)
+
+
 async def _retry_tool_call(session, tool_name: str, arguments: dict,
                            max_retries: int = 2, delay: float = 3.0,
                            timeout: float | None = None) -> str:
@@ -856,7 +1027,17 @@ async def _retry_tool_call(session, tool_name: str, arguments: dict,
                 item.text if hasattr(item, "text") else str(item)
                 for item in tool_result.content
             ]
-            return "\n".join(result_text_parts)
+            result_str = "\n".join(result_text_parts)
+
+            # Fast abort on Docker daemon offline in tool output
+            if _is_docker_daemon_offline_error(result_str):
+                console.print(
+                    f"[bold red]🐳 CẢNH BÁO DOCKER DAEMON: Không thể kết nối tới Docker Daemon khi gọi '{tool_name}'! "
+                    f"Vui lòng kiểm tra Docker Desktop / daemon service đã khởi động chưa.[/bold red]"
+                )
+                return result_str
+
+            return result_str
         except asyncio.TimeoutError:
             last_error = f"Tool execution timed out after {call_timeout:.0f}s"
             if attempt < max_retries:
@@ -870,6 +1051,15 @@ async def _retry_tool_call(session, tool_name: str, arguments: dict,
                 break
         except Exception as err:
             last_error = err
+            err_str = str(err)
+            # Fast abort on Docker daemon offline in exception
+            if _is_docker_daemon_offline_error(err_str):
+                console.print(
+                    f"[bold red]🐳 CẢNH BÁO DOCKER DAEMON: Không thể kết nối tới Docker Daemon ({err_str})! "
+                    f"Dừng retry công cụ '{tool_name}' để tiết kiệm thời gian vận hành.[/bold red]"
+                )
+                return f"Error executing tool '{tool_name}': Docker daemon is offline or unreachable. Details: {err_str}"
+
             if attempt < max_retries:
                 wait_time = delay * (2 ** attempt)
                 console.print(
@@ -881,6 +1071,7 @@ async def _retry_tool_call(session, tool_name: str, arguments: dict,
                 break
 
     return f"Error executing tool '{tool_name}' after {max_retries + 1} attempts: {last_error}"
+
 
 
 # ---------------------------------------------------------------------------
@@ -2494,10 +2685,11 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             extra_body_with_think = {**extra_body, "reasoning_effort": "none"}
                             call_kwargs["extra_body"] = extra_body_with_think
     
-                        response = await asyncio.wait_for(
-                            client.chat.completions.create(**call_kwargs),
-                            timeout=180,
-                        )
+                        with console.status("[bold cyan]🧠 Qwen đang suy luận chiến thuật...[/bold cyan]", spinner="dots"):
+                            response = await asyncio.wait_for(
+                                client.chat.completions.create(**call_kwargs),
+                                timeout=180,
+                            )
                         msg = response.choices[0].message
                         finish_reason = response.choices[0].finish_reason
                         response_content = msg.content or ""
@@ -2670,13 +2862,14 @@ async def run_agent(prompt: str, server_script: str | None = None,
     
                             # Tool call with retry logic and timing
                             tool_start = time.time()
-                            result_str = await _retry_tool_call(
-                                session, tool_name, arguments,
-                                max_retries=retry_max, delay=retry_delay,
-                            )
+                            with console.status(f"[bold cyan]⚙️ Đang thực thi công cụ {tool_name}...[/bold cyan]", spinner="dots"):
+                                result_str = await _retry_tool_call(
+                                    session, tool_name, arguments,
+                                    max_retries=retry_max, delay=retry_delay,
+                                )
                             tool_duration = time.time() - tool_start
     
-                            console.print(f"[bold cyan]📥 Tool Output:[/bold cyan] {result_str}")
+                            console.print(f"[bold cyan]📥 Tool Output ({tool_duration:.1f}s):[/bold cyan] {result_str}")
     
                             # Determine tool status
                             is_error = any(kw in result_str.lower() for kw in [
@@ -2725,14 +2918,12 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             reporter_comment = ""
                             feedback_block = ""
                             if reporter_realtime and tool_name not in reporter_skip_tools:
-                                console.print(
-                                    f"[dim]🔍 Reporter đang phân tích kết quả {tool_name}...[/dim]"
-                                )
-                                reporter_result = await _invoke_reporter_realtime(
-                                    client, report_state,
-                                    tool_name, arguments, result_str, iteration,
-                                    distilled_summary=distilled_intel.get("summary", ""),
-                                )
+                                with console.status(f"[bold cyan]🔍 Reporter đang phân tích kết quả {tool_name}...[/bold cyan]", spinner="dots"):
+                                    reporter_result = await _invoke_reporter_realtime(
+                                        client, report_state,
+                                        tool_name, arguments, result_str, iteration,
+                                        distilled_summary=distilled_intel.get("summary", ""),
+                                    )
     
                                 if reporter_result:
                                     raw_findings = reporter_result.get("new_findings", [])
