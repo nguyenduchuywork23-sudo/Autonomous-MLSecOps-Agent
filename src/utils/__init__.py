@@ -18,6 +18,10 @@ from .defense_rule_synthesizer import DefenseRuleSynthesizer, DefenseRuleSet
 from .chokepoint_analyzer import ChokepointAnalyzer, ChokepointCandidate, ChokepointReport
 from .spa_state_crawler import SPAStateCrawler, SPARoute, SPACrawlResult
 from .session_guardian import SessionGuardian, SessionState
+from .remediation_verifier import ClosedLoopRemediationVerifier, VerificationReport, VerificationVerdict
+from .active_deception_engine import ActiveDeceptionEngine, DeceptionTopology, CanaryToken, DecoyRouteTrap
+from .threat_actor_profiler import ThreatActorProfiler, CampaignAttributionReport, ThreatAttributionMatch, MitreTechnique
+from .wargame_arena import WargameArena, HardenedDefenseResult, WargameRound, WargameConvergenceStatus
 
 __all__ = [
     "config",
@@ -58,4 +62,19 @@ __all__ = [
     "SPACrawlResult",
     "SessionGuardian",
     "SessionState",
+    "ClosedLoopRemediationVerifier",
+    "VerificationReport",
+    "VerificationVerdict",
+    "ActiveDeceptionEngine",
+    "DeceptionTopology",
+    "CanaryToken",
+    "DecoyRouteTrap",
+    "ThreatActorProfiler",
+    "CampaignAttributionReport",
+    "ThreatAttributionMatch",
+    "MitreTechnique",
+    "WargameArena",
+    "HardenedDefenseResult",
+    "WargameRound",
+    "WargameConvergenceStatus",
 ]

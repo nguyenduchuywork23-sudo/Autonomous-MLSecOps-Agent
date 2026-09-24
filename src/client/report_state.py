@@ -131,6 +131,7 @@ class Finding:
     patch_diff: str = ""
     sandbox_verified: bool = False
     virtual_patch_rules: dict[str, str] = field(default_factory=dict)
+    remediation_verification: dict[str, Any] = field(default_factory=dict)
 
     # Valid severity levels (ordered by priority)
     SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
@@ -213,6 +214,24 @@ class Finding:
                 rule_synth = DefenseRuleSynthesizer()
                 rule_set = rule_synth.synthesize_rules(self.title, self.description, self.raw_evidence, self.cve_id)
                 self.virtual_patch_rules = rule_set.to_dict()
+            except Exception:
+                pass
+
+        # Closed-Loop Remediation Verification & Differential Fuzzing
+        if not self.remediation_verification and self.virtual_patch_rules:
+            try:
+                from src.utils.remediation_verifier import ClosedLoopRemediationVerifier
+                verifier = ClosedLoopRemediationVerifier()
+                rule_text = self.virtual_patch_rules.get("modsecurity_rule") or self.virtual_patch_rules.get("suricata_rule") or ""
+                cat = self.virtual_patch_rules.get("category", "General")
+                evidence_payload = self.raw_evidence or self.title
+                rep = verifier.verify_remediation(
+                    finding_title=self.title,
+                    category=cat,
+                    base_exploit_payload=evidence_payload,
+                    rule_definition=rule_text,
+                )
+                self.remediation_verification = rep.to_dict()
             except Exception:
                 pass
 

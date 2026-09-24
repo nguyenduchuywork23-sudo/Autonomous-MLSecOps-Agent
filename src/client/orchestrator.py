@@ -62,6 +62,10 @@ from src.utils.chokepoint_analyzer import ChokepointAnalyzer, ChokepointReport
 from src.utils.spa_state_crawler import SPAStateCrawler, SPACrawlResult
 from src.utils.session_guardian import SessionGuardian
 from src.utils.attack_graph import BayesianAttackGraph
+from src.utils.remediation_verifier import ClosedLoopRemediationVerifier
+from src.utils.active_deception_engine import ActiveDeceptionEngine
+from src.utils.threat_actor_profiler import ThreatActorProfiler
+from src.utils.wargame_arena import WargameArena
 
 console = Console()
 logger = logging.getLogger("orchestrator")
@@ -2515,9 +2519,13 @@ async def run_agent(prompt: str, server_script: str | None = None,
     spa_crawler = SPAStateCrawler()
     chokepoint_analyzer = ChokepointAnalyzer()
     defense_synthesizer = DefenseRuleSynthesizer()
+    remediation_verifier = ClosedLoopRemediationVerifier()
+    deception_engine = ActiveDeceptionEngine()
+    threat_profiler = ThreatActorProfiler()
+    wargame_arena = WargameArena()
     console.print(
-        "[bold cyan]⚡ Superhuman Autonomous Cyber Intelligence & Blue Defense: ONLINE "
-        "(MCTS Lookahead, API Fuzzer, WAF Decompiler, Patch Sandbox, Chokepoint Cut, SPA Crawler, Session Guardian)[/bold cyan]"
+        "[bold cyan]⚡ Apex Autonomous Cyber Intelligence & Counter-Deception Grid: ONLINE "
+        "(MCTS Lookahead, API Fuzzer, WAF Decompiler, Patch Sandbox, Chokepoint Cut, SPA Crawler, Session Guardian, Closed-Loop Verifier, Active Deception, Threat Profiler, Wargame Arena)[/bold cyan]"
     )
 
     # 2. Connect to MCP Server via stdio
@@ -2569,6 +2577,18 @@ async def run_agent(prompt: str, server_script: str | None = None,
                 f"For web application tools (crawl, sqlmap, nuclei, browse, whatweb, nikto, dirb, ffuf, wpscan), use the full URL '{target_url or target_raw}'.\n"
                 "NEVER use placeholders like 'target.com', 'example.com', or '127.0.0.1'.\n"
             )
+
+            # Active Cyber Deception Grid Synthesizer
+            try:
+                deception_domain = target_hostname or target_raw
+                deception_topo = deception_engine.synthesize_deception_topology(deception_domain)
+                console.print(
+                    f"[bold magenta]🍯 Active Cyber Deception Grid Synthesized: "
+                    f"{len(deception_topo.canary_tokens)} Canary Tokens, {len(deception_topo.decoy_traps)} Decoy Traps, "
+                    f"{len(deception_topo.tripwire_waf_rules)} Tripwires[/bold magenta]"
+                )
+            except Exception as e:
+                logger.debug("Deception synthesis error: %s", e)
 
             # Mode-specific instructions
             if scan_mode == "recon":
@@ -2946,6 +2966,41 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                     messages.append({"role": "user", "content": cp_block})
                     except Exception as e:
                         logger.debug("Chokepoint analysis error: %s", e)
+
+                    # Dynamic Threat Actor Attribution & MITRE ATT&CK Directive
+                    try:
+                        if len(report_state.findings) >= 2:
+                            finding_titles = [f.title for f in report_state.findings]
+                            attr_rep = threat_profiler.attribute_campaign(finding_titles)
+                            if attr_rep.top_matched_actors and attr_rep.top_matched_actors[0].similarity_score >= 0.35:
+                                top_a = attr_rep.top_matched_actors[0]
+                                attr_block = (
+                                    f"=== ADVERSARY ATTRIBUTION ALERT ===\n"
+                                    f"Observed TTPs correlate with {top_a.actor_name} ({top_a.origin}) at {top_a.similarity_score*100:.1f}% concordance.\n"
+                                    f"Predicted Next Steps: {top_a.predicted_next_steps[0]}\n"
+                                )
+                                if not any("ADVERSARY ATTRIBUTION ALERT" in str(m.get("content", "")) for m in messages[-2:]):
+                                    messages.append({"role": "user", "content": attr_block})
+                    except Exception as e:
+                        logger.debug("Threat profiler error: %s", e)
+
+                    # In-Silico Wargame Hardening for Virtual Patch Rules
+                    try:
+                        for f in report_state.findings:
+                            if f.virtual_patch_rules and not f.virtual_patch_rules.get("wargame_hardened"):
+                                rule_txt = f.virtual_patch_rules.get("modsecurity_rule", "")
+                                if rule_txt:
+                                    wg_res = wargame_arena.run_wargame(
+                                        finding_title=f.title,
+                                        category=f.virtual_patch_rules.get("category", "General"),
+                                        base_payload=f.raw_evidence or f.title,
+                                        initial_rule=rule_txt,
+                                    )
+                                    f.virtual_patch_rules["modsecurity_rule"] = wg_res.hardened_rule
+                                    f.virtual_patch_rules["wargame_hardened"] = True
+                                    f.virtual_patch_rules["wargame_resilience"] = wg_res.resilience_score
+                    except Exception as e:
+                        logger.debug("Wargame hardening error: %s", e)
 
                     try:
                         call_kwargs = {

@@ -90,6 +90,11 @@ def generate_html_report(report_data: dict[str, Any], output_path: str | None = 
         f_rules = f.get("virtual_patch_rules") or {}
         f_modsec = html.escape(str(f_rules.get("modsecurity_rule", "")))
         f_suricata = html.escape(str(f_rules.get("suricata_rule", "")))
+        f_verif = f.get("remediation_verification") or {}
+        f_verif_verdict = html.escape(str(f_verif.get("verdict", "")))
+        f_verif_conf = f_verif.get("confidence_score")
+        f_verif_conf_str = f"{f_verif_conf * 100:.1f}%" if f_verif_conf is not None else ""
+        f_verif_summary = html.escape(str(f_verif.get("remediation_summary", "")))
 
         sev_class = f_sev.lower()
 
@@ -167,6 +172,13 @@ def generate_html_report(report_data: dict[str, Any], output_path: str | None = 
                 ''' if f_modsec else ''}
 
                 {f'''
+                <div class="section-block" style="background: rgba(16, 185, 129, 0.08); border-left: 4px solid #10b981; padding: 12px 16px; border-radius: 6px; margin-top: 14px;">
+                    <h4 class="block-title" style="color: #34d399; margin-bottom: 4px;">🧪 Xác Thực Closed-Loop & Differential Fuzzing [{f_verif_verdict}] ({f_verif_conf_str})</h4>
+                    <p class="block-content" style="font-size: 0.9rem; color: #e5e7eb;">{f_verif_summary}</p>
+                </div>
+                ''' if f_verif_verdict else ''}
+
+                {f'''
                 <div class="section-block">
                     <details class="evidence-details">
                         <summary>🔍 Bằng chứng Thực nghiệm (Raw Proof-of-Concept Evidence)</summary>
@@ -213,6 +225,40 @@ def generate_html_report(report_data: dict[str, Any], output_path: str | None = 
     # Technologies badges HTML
     tech_badges = [f"<span class='tag-tech'>{html.escape(t)}</span>" for t in detected_tech]
     tech_html_str = "".join(tech_badges) if tech_badges else "<span class='text-muted'>Chưa nhận diện</span>"
+
+    # Threat Actor Attribution & MITRE ATT&CK Profiling
+    from src.utils.threat_actor_profiler import ThreatActorProfiler
+    profiler = ThreatActorProfiler()
+    f_titles = [f.get("title", "") for f in findings]
+    attribution = profiler.attribute_campaign(f_titles)
+
+    actor_cards = []
+    for actor in attribution.top_matched_actors:
+        sim_pct = int(actor.similarity_score * 100)
+        ttps_tags = "".join(f"<span class='tag-tech' style='background:rgba(244,63,94,0.15); color:#fda4af;'>{t}</span>" for t in actor.matched_ttps)
+        pred_steps = "".join(f"<li>{html.escape(s)}</li>" for s in actor.predicted_next_steps)
+        actor_cards.append(f"""
+        <div class="surface-box" style="border-left: 4px solid var(--color-rose);">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <h4 style="font-size:14px; color:#fff; font-weight:700; margin:0;">{html.escape(actor.actor_name)} <span style="font-size:11px; color:var(--text-muted); font-weight:normal;">({html.escape(actor.origin)})</span></h4>
+                <span class="badge badge-rose">{sim_pct}% Tương Đồng</span>
+            </div>
+            <p style="font-size:12px; color:var(--text-muted); margin: 6px 0;">Động cơ: {html.escape(actor.motivation)}</p>
+            <div style="margin: 6px 0;">{ttps_tags}</div>
+            <div style="font-size:12px; color:#9ca3af; margin-top:6px;">
+                <strong style="color:#f59e0b;">Dự báo bước kế tiếp:</strong>
+                <ul style="margin: 4px 0 0 16px; padding:0;">{pred_steps}</ul>
+            </div>
+        </div>
+        """)
+    actors_html_str = "".join(actor_cards) if actor_cards else "<p class='text-muted'>Chưa đủ dữ liệu quy kết.</p>"
+
+    mitre_tech_badges = []
+    for tech in attribution.observed_techniques:
+        mitre_tech_badges.append(
+            f"<span class='tag-port' title='{html.escape(tech.description)}'><strong style='color:#fff;'>{html.escape(tech.technique_id)}</strong>: {html.escape(tech.name)}</span>"
+        )
+    mitre_tech_html = "".join(mitre_tech_badges) if mitre_tech_badges else "<span class='text-muted'>Chưa ghi nhận kỹ thuật MITRE.</span>"
 
     html_template = f"""<!DOCTYPE html>
 <html lang="vi">
@@ -490,6 +536,23 @@ def generate_html_report(report_data: dict[str, Any], output_path: str | None = 
                     <h4>Hệ Thống Tường Lửa Ứng Dụng Web (WAF):</h4>
                     <span class="font-bold text-amber">{primary_waf}</span>
                 </div>
+            </div>
+        </section>
+
+        <!-- Threat Actor Attribution & MITRE ATT&CK Panel -->
+        <section class="surface-panel" style="border: 1px solid rgba(244, 63, 94, 0.3); background: rgba(244, 63, 94, 0.02);">
+            <h3 class="panel-heading" style="color: #fda4af;">🎯 Tình Báo Quy Kết Tác Nhân Đe Dọa (MITRE ATT&CK & APT Profiler)</h3>
+            <div style="background: var(--bg-elevated); padding: 14px 18px; border-radius: 8px; margin-bottom: 16px; border-left: 4px solid var(--color-amber);">
+                <span style="font-weight: 700; color: #f59e0b;">Nhận Định Chiến Lược Cho Lãnh Đạo (CISO Briefing):</span>
+                <p style="margin: 6px 0 0 0; font-size: 13px; color: #e5e7eb; line-height: 1.5;">{html.escape(attribution.ciso_briefing)}</p>
+            </div>
+            <div style="margin-bottom: 16px;">
+                <h4 style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">Kỹ Thuật MITRE ATT&CK v14 Quan Sát Thấy:</h4>
+                {mitre_tech_html}
+            </div>
+            <h4 style="font-size: 13px; color: var(--text-muted); margin-bottom: 10px;">Hồ Sơ Nhóm Tác Nhân APT Tương Đồng Nhất:</h4>
+            <div class="surface-grid">
+                {actors_html_str}
             </div>
         </section>
 
