@@ -89,12 +89,13 @@ reporter:
     - docker_resolve_dns
     - browse_webpage
 
-# --- Reporting (Multi-Format: DOCX, Markdown, JSON) ---
+# --- Reporting (Multi-Format: DOCX, Markdown, JSON, HTML) ---
 reports:
   output_dir: "reports"
   generate_word: true
   generate_markdown: true
   generate_json: true
+  generate_html: true
   company_name: "Security Assessment Team"
   classification: "CONFIDENTIAL"
 

@@ -102,6 +102,10 @@ SERVICE_ATTACK_CHAINS = {
 
 
 
+from src.utils.cve_enricher import enrich_cve_intel, extract_cve_ids
+from src.utils.remediation_engine import generate_remediation_snippet
+
+
 @dataclass
 class Finding:
     """A single security finding discovered during the assessment."""
@@ -116,6 +120,10 @@ class Finding:
     timestamp: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
     cve_id: str = ""
     cvss_score: Optional[float] = None
+    cvss_vector: str = ""
+    epss_score: Optional[float] = None
+    cisa_kev: bool = False
+    remediation_code: str = ""
     owasp_category: str = ""
     mitre_tactics: list[str] = field(default_factory=list)
     mitre_techniques: list[str] = field(default_factory=list)
@@ -124,7 +132,7 @@ class Finding:
     SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 
     def __post_init__(self):
-        """Normalize severity to uppercase, strip, and validate."""
+        """Normalize severity to uppercase, strip, validate, and auto-enrich."""
         raw_sev = (self.severity or "INFO").upper().strip()
         sev_map = {
             "CRIT": "CRITICAL",
@@ -151,8 +159,37 @@ class Finding:
             except (ValueError, TypeError):
                 self.cvss_score = None
 
+        # Auto-extract CVE if not explicitly set
+        if not self.cve_id:
+            cves = extract_cve_ids(f"{self.title} {self.description} {self.raw_evidence}")
+            if cves:
+                self.cve_id = cves[0]
+
+        # Threat Intelligence & CVE Enrichment (CVSS Vector, EPSS, CISA KEV)
+        if self.cve_id:
+            try:
+                intel = enrich_cve_intel(self.cve_id, self.severity)
+                if self.cvss_score is None and intel.get("cvss_score") is not None:
+                    self.cvss_score = intel["cvss_score"]
+                if not self.cvss_vector and intel.get("cvss_vector"):
+                    self.cvss_vector = intel["cvss_vector"]
+                if self.epss_score is None and intel.get("epss_score") is not None:
+                    self.epss_score = intel["epss_score"]
+                if not self.cisa_kev and intel.get("cisa_kev"):
+                    self.cisa_kev = intel["cisa_kev"]
+            except Exception:
+                pass
+
         if not self.owasp_category or not self.mitre_techniques:
             self._auto_map_frameworks()
+
+        # Actionable Code Remediation Generator
+        if not self.remediation_code:
+            try:
+                rem_info = generate_remediation_snippet(self.title, self.owasp_category, self.cve_id)
+                self.remediation_code = rem_info.get("code", "")
+            except Exception:
+                pass
 
     def _auto_map_frameworks(self) -> None:
         """Automatically classify finding into OWASP Top 10 (2021) and MITRE ATT&CK Matrix."""
@@ -2407,6 +2444,9 @@ class ReportState:
                     f"| **Mức độ nghiêm trọng** | **`{f.severity}`** |",
                     f"| **Mã CVE** | `{f.cve_id or 'N/A'}` |",
                     f"| **Điểm CVSS v3.1** | **{f.cvss_score if f.cvss_score is not None else 'N/A'}** |",
+                    f"| **Chuỗi Vector CVSS** | `{getattr(f, 'cvss_vector', '') or 'N/A'}` |",
+                    f"| **Xác suất Khai thác (EPSS)** | **{f'{f.epss_score * 100:.1f}%' if getattr(f, 'epss_score', None) is not None else 'N/A'}** |",
+                    f"| **Danh mục CISA KEV** | `{ 'CÓ (Đang bị khai thác trong thực tế)' if getattr(f, 'cisa_kev', False) else 'Không' }` |",
                     f"| **Danh mục OWASP (2021)** | `{getattr(f, 'owasp_category', '') or 'N/A'}` |",
                     f"| **Kỹ thuật MITRE ATT&CK** | `{mitre_str}` |",
                     f"| **Công cụ phát hiện** | `{f.tool_source or 'N/A'}` |",
@@ -2419,6 +2459,14 @@ class ReportState:
                     f"**Biện pháp Khắc phục Đề xuất:**  \n{f.remediation or 'N/A'}",
                     "",
                 ])
+                if getattr(f, "remediation_code", None):
+                    lines.extend([
+                        "**Mã Nguồn / Cấu Hình Khắc Phục Mẫu (Actionable Remediation Code):**",
+                        "```text",
+                        f.remediation_code,
+                        "```",
+                        "",
+                    ])
                 if f.raw_evidence:
                     lines.extend([
                         "**Bằng chứng Thực nghiệm (Proof of Concept / Raw Evidence):**",
@@ -2760,5 +2808,29 @@ class ReportState:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
         return cls.from_dict(data)
+
+    def to_json(self) -> str:
+        """Serialize complete state to JSON string."""
+        return json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
+
+    def export_json(self, file_path: str) -> str:
+        """Export report data to JSON file."""
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(self.to_json())
+        return file_path
+
+    def export_markdown(self, file_path: str) -> str:
+        """Export report data to Markdown file."""
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(self.to_markdown())
+        return file_path
+
+    def export_html(self, file_path: str) -> str:
+        """Export report data as an interactive HTML Cyber Dashboard."""
+        from src.utils.html_report_generator import generate_html_report
+        generate_html_report(self.to_dict(), file_path)
+        return file_path
 
 

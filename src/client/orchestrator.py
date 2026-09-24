@@ -730,7 +730,13 @@ KNOWN_TOOL_EXPECTED_PARAMS = {
 }
 
 
-def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | None = None, detected_waf: str | None = None) -> dict:
+def _normalize_tool_args(
+    tool_name: str,
+    arguments: dict,
+    tools_schema: list | None = None,
+    detected_waf: str | None = None,
+    detected_technologies: list[str] | None = None,
+) -> dict:
     """Auto-correct common argument naming and formatting mistakes from the LLM.
 
     Capabilities:
@@ -740,6 +746,7 @@ def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | N
     4. Targets List Healing: Converts list of targets to a comma-separated string for tools like docker_httpx_probe.
     5. Port/Ports Type Healing: Safely normalizes port types between int, string, and list.
     6. WAF Tamper Evasion: Auto-injects appropriate tamper script when WAF is active and not already provided.
+    7. Technology-Aware Adaptive Wordlist: Automatically selects specialized dictionary matching detected technologies.
     """
     if not isinstance(arguments, dict):
         return arguments
@@ -896,6 +903,19 @@ def _normalize_tool_args(tool_name: str, arguments: dict, tools_schema: list | N
         if tamper_script:
             corrected["tamper"] = tamper_script
             console.print(f"[dim magenta]🛡️ WAF Tamper script '{tamper_script}' auto-injected for '{tool_name}' (Target WAF: {detected_waf})[/dim magenta]")
+
+    # 6. Technology-Aware Adaptive Wordlist Selection for Directory / Endpoint Fuzzers
+    if tool_name in ("docker_dirb_scan", "docker_ffuf") and detected_technologies:
+        current_wl = str(corrected.get("wordlist", "")).lower()
+        if not current_wl or any(g in current_wl for g in ("dirb_common", "common.txt", "default")):
+            try:
+                from src.utils.wordlist_selector import resolve_technology_wordlist
+                adaptive_wl = resolve_technology_wordlist(detected_technologies)
+                if adaptive_wl:
+                    corrected["wordlist"] = adaptive_wl
+                    console.print(f"[dim cyan]🎯 Adaptive Wordlist: Tự động chọn từ điển chuyên biệt '{os.path.basename(adaptive_wl)}' cho '{tool_name}'[/dim cyan]")
+            except Exception:
+                pass
 
     return corrected
 
@@ -2052,6 +2072,15 @@ def _export_all_reports(report_state: ReportState, audit_path: str, target_raw_s
         except Exception as exp_err:
             console.print(f"[dim]Note: JSON export notice: {exp_err}[/dim]")
 
+    html_path = os.path.normpath(os.path.join(report_dir, f"Pentest_Report_{safe_target}_{ts}.html"))
+    if cfg_get("reports.generate_html", True):
+        try:
+            from src.utils.html_report_generator import generate_html_report
+            generate_html_report(report_state.to_dict(), html_path)
+            console.print(f"[bold green][+] Interactive Cyber Dashboard (HTML): {html_path}[/bold green]")
+        except Exception as html_err:
+            console.print(f"[dim]Note: HTML export notice: {html_err}[/dim]")
+
     # Terminal Full-Spectrum Summary Table
     counts = report_state.get_severity_counts()
     progress = report_state.calculate_goal_progress()
@@ -2908,10 +2937,17 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                 else:
                                     arguments = {"target": target_url}
                                 logger.info("Auto-injected target into empty args for %s", tool_name)
-                            # Auto-correct argument names and inject WAF evasion tamper BEFORE anti-loop check
+                            # Auto-correct argument names, inject WAF evasion tamper and adaptive wordlist BEFORE anti-loop check
                             waf_info = getattr(report_state.attack_surface, "detected_waf", {}) if report_state else {}
                             detected_waf_name = waf_info.get("primary_waf", "") if waf_info else ""
-                            arguments = _normalize_tool_args(tool_name, arguments, tools_schema, detected_waf=detected_waf_name)
+                            techs = getattr(report_state.attack_surface, "detected_technologies", []) if report_state else []
+                            arguments = _normalize_tool_args(
+                                tool_name,
+                                arguments,
+                                tools_schema,
+                                detected_waf=detected_waf_name,
+                                detected_technologies=techs,
+                            )
     
                             # ANTI-LOOP ENFORCEMENT: block duplicate tool+args calls
                             call_sig = f"{tool_name}::{json.dumps(arguments, sort_keys=True)}"

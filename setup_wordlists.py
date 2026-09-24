@@ -64,7 +64,58 @@ def setup_enterprise_wordlists(force: bool = False):
         force=force,
     )
 
+    # 6. Setup Technology-Specific Wordlists
+    _setup_tech_wordlists(wordlists_dir)
+
     print("\n[!] ALL TASKS COMPLETED. Wordlists are ready in /wordlists.")
+
+
+def _setup_tech_wordlists(wordlists_dir: str) -> None:
+    """Create curated technology-specific wordlists for adaptive fuzzing."""
+    tech_dir = os.path.join(wordlists_dir, "tech")
+    os.makedirs(tech_dir, exist_ok=True)
+
+    tech_lists = {
+        "wordpress.txt": [
+            "wp-login.php", "wp-admin", "wp-content", "wp-includes", "xmlrpc.php",
+            "wp-json/wp/v2/users", "wp-config.php.bak", "wp-config.php.dist", "wp-config.old",
+            "wp-content/debug.log", "wp-content/plugins", "wp-content/themes",
+            "readme.html", "license.txt", "wp-links-opml.php", "wp-cron.php",
+        ],
+        "php.txt": [
+            "info.php", "phpinfo.php", "test.php", "config.php", "db.php",
+            "database.php", "connect.php", "admin.php", "login.php", "upload.php",
+            "shell.php", "eval.php", "cmd.php", "composer.json", "composer.lock",
+            "phpmyadmin", "pma", "server-status", "web.config", ".htaccess",
+        ],
+        "spring.txt": [
+            "actuator", "actuator/health", "actuator/env", "actuator/beans",
+            "actuator/configprops", "actuator/heapdump", "actuator/mappings",
+            "actuator/metrics", "actuator/info", "actuator/threaddump",
+            "swagger-ui.html", "v2/api-docs", "v3/api-docs", "swagger-ui/",
+            "api-docs", "hystrix", "turbine", "eureka", "druid/index.html",
+        ],
+        "api.txt": [
+            "api", "api/v1", "api/v2", "api/v3", "v1", "v2", "graphql",
+            "graphiql", "swagger", "swagger-ui", "openapi.json", "openapi.yaml",
+            "docs", "documentation", "health", "healthz", "metrics", "status",
+            "auth/login", "auth/token", "oauth/token", "user/profile",
+        ],
+        "sensitive_files.txt": [
+            ".env", ".env.local", ".env.production", ".env.bak",
+            ".git/config", ".git/HEAD", ".gitignore", ".svn/entries",
+            "backup.sql", "dump.sql", "database.sql", "users.sql",
+            "config.json", "config.yaml", "settings.py", "docker-compose.yml",
+            "Dockerfile", "id_rsa", "id_rsa.pub", "credentials.json",
+        ],
+    }
+
+    for filename, entries in tech_lists.items():
+        filepath = os.path.join(tech_dir, filename)
+        if not os.path.exists(filepath) or os.path.getsize(filepath) < 10:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("\n".join(entries) + "\n")
+            print(f"[+] CREATED: wordlists/tech/{filename} ({len(entries)} entries)")
 
 
 def _download(url: str, dest: str, label: str, force: bool = False) -> None:
