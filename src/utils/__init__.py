@@ -14,6 +14,10 @@ from .mcts_simulator import MCTSCyberSimulator, MCTSSimulationResult, MCTSNode
 from .api_logic_fuzzer import APILogicFuzzer, APILogicFuzzTarget, APISchemaEndpoint
 from .waf_fingerprinter import WAFFingerprinter, BlockedTokenAnalysis
 from .patch_sandbox import PatchSynthesizer, PatchDiffResult, HotfixSandboxVerifier
+from .defense_rule_synthesizer import DefenseRuleSynthesizer, DefenseRuleSet
+from .chokepoint_analyzer import ChokepointAnalyzer, ChokepointCandidate, ChokepointReport
+from .spa_state_crawler import SPAStateCrawler, SPARoute, SPACrawlResult
+from .session_guardian import SessionGuardian, SessionState
 
 __all__ = [
     "config",
@@ -44,4 +48,14 @@ __all__ = [
     "PatchSynthesizer",
     "PatchDiffResult",
     "HotfixSandboxVerifier",
+    "DefenseRuleSynthesizer",
+    "DefenseRuleSet",
+    "ChokepointAnalyzer",
+    "ChokepointCandidate",
+    "ChokepointReport",
+    "SPAStateCrawler",
+    "SPARoute",
+    "SPACrawlResult",
+    "SessionGuardian",
+    "SessionState",
 ]

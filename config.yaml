@@ -41,6 +41,10 @@ agent:
   api_logic_fuzzer: true            # Bộ tạo đột biến ngữ pháp OpenAPI/Swagger/GraphQL kiểm thử BOLA, IDOR & Mass Assignment
   waf_fingerprinter: true           # Giải mã hành vi phòng thủ WAF và dịch ngược luật regex OWASP CRS
   patch_sandbox: true               # Bộ tổng hợp bản vá Unified Git Diff và sandbox kiểm định triệt tiêu lỗ hổng
+  defense_rule_synthesizer: true    # Bộ tổng hợp luật phòng thủ đa nền tảng (ModSecurity WAF, Suricata IDS, Sigma SIEM, Cloudflare)
+  chokepoint_analyzer: true         # Động cơ can thiệp đồ thị điểm nghẽn trọng yếu (Defense Chokepoints & Blast Radius Reduction)
+  spa_state_crawler: true           # Bộ bóc tách bundle frontend SPA (React/Vue/Next.js) và khai thác routing ngầm phía client
+  session_guardian: true            # Người giám hộ phiên tự phục hồi (Self-Healing Session State & JWT Auto-Refresh)
 
 # --- MCP Server ---
 mcp:

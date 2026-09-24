@@ -130,6 +130,7 @@ class Finding:
 
     patch_diff: str = ""
     sandbox_verified: bool = False
+    virtual_patch_rules: dict[str, str] = field(default_factory=dict)
 
     # Valid severity levels (ordered by priority)
     SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
@@ -202,6 +203,16 @@ class Finding:
                 patch_res = patch_synth.synthesize_patch(self.title, self.description, self.raw_evidence)
                 self.patch_diff = patch_res.unified_diff
                 self.sandbox_verified = patch_res.sandbox_verified
+            except Exception:
+                pass
+
+        # Multi-Platform Blue Team Defense Rule Synthesizer (WAF, IDS, SIEM)
+        if not self.virtual_patch_rules:
+            try:
+                from src.utils.defense_rule_synthesizer import DefenseRuleSynthesizer
+                rule_synth = DefenseRuleSynthesizer()
+                rule_set = rule_synth.synthesize_rules(self.title, self.description, self.raw_evidence, self.cve_id)
+                self.virtual_patch_rules = rule_set.to_dict()
             except Exception:
                 pass
 

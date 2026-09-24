@@ -87,6 +87,9 @@ def generate_html_report(report_data: dict[str, Any], output_path: str | None = 
         f_rem_code = html.escape(str(f.get("remediation_code", "")))
         f_patch_diff = html.escape(str(f.get("patch_diff", "")))
         f_verified = "ĐÃ XÁC THỰC SANDBOX" if f.get("sandbox_verified") else "CHỜ DUYỆT"
+        f_rules = f.get("virtual_patch_rules") or {}
+        f_modsec = html.escape(str(f_rules.get("modsecurity_rule", "")))
+        f_suricata = html.escape(str(f_rules.get("suricata_rule", "")))
 
         sev_class = f_sev.lower()
 
@@ -146,6 +149,22 @@ def generate_html_report(report_data: dict[str, Any], output_path: str | None = 
                     <pre><code id="diff-{idx}">{f_patch_diff}</code></pre>
                 </div>
                 ''' if f_patch_diff else ''}
+
+                {f'''
+                <div class="section-block code-block-wrap">
+                    <div class="code-header">
+                        <span class="code-title">🛡️ Luật Phòng Thủ Tường Lửa & Phát Hiện Xâm Nhập (Blue Team Rules):</span>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <span style="font-weight: 600; color: #38bdf8; font-size: 0.85rem;">• ModSecurity / OWASP CRS WAF Rule:</span>
+                        <pre style="margin-top: 4px;"><code>{f_modsec}</code></pre>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <span style="font-weight: 600; color: #a78bfa; font-size: 0.85rem;">• Suricata / Snort IDS Signature:</span>
+                        <pre style="margin-top: 4px;"><code>{f_suricata}</code></pre>
+                    </div>
+                </div>
+                ''' if f_modsec else ''}
 
                 {f'''
                 <div class="section-block">

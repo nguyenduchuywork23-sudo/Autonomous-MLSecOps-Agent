@@ -57,6 +57,11 @@ from src.utils.mcts_simulator import MCTSCyberSimulator, MCTSSimulationResult
 from src.utils.api_logic_fuzzer import APILogicFuzzer, APILogicFuzzTarget
 from src.utils.waf_fingerprinter import WAFFingerprinter, BlockedTokenAnalysis
 from src.utils.patch_sandbox import PatchSynthesizer, PatchDiffResult
+from src.utils.defense_rule_synthesizer import DefenseRuleSynthesizer
+from src.utils.chokepoint_analyzer import ChokepointAnalyzer, ChokepointReport
+from src.utils.spa_state_crawler import SPAStateCrawler, SPACrawlResult
+from src.utils.session_guardian import SessionGuardian
+from src.utils.attack_graph import BayesianAttackGraph
 
 console = Console()
 logger = logging.getLogger("orchestrator")
@@ -2506,9 +2511,13 @@ async def run_agent(prompt: str, server_script: str | None = None,
     api_fuzzer = APILogicFuzzer()
     waf_fingerprinter = WAFFingerprinter()
     patch_synthesizer = PatchSynthesizer()
+    session_guardian = SessionGuardian()
+    spa_crawler = SPAStateCrawler()
+    chokepoint_analyzer = ChokepointAnalyzer()
+    defense_synthesizer = DefenseRuleSynthesizer()
     console.print(
-        "[bold cyan]⚡ Superhuman Autonomous Cyber Intelligence: ONLINE "
-        "(MCTS Lookahead Simulator, API Logic Fuzzer, WAF Decompiler, Patch Sandbox)[/bold cyan]"
+        "[bold cyan]⚡ Superhuman Autonomous Cyber Intelligence & Blue Defense: ONLINE "
+        "(MCTS Lookahead, API Fuzzer, WAF Decompiler, Patch Sandbox, Chokepoint Cut, SPA Crawler, Session Guardian)[/bold cyan]"
     )
 
     # 2. Connect to MCP Server via stdio
@@ -2926,6 +2935,18 @@ async def run_agent(prompt: str, server_script: str | None = None,
                     except Exception as e:
                         logger.debug("MCTS lookahead simulation error: %s", e)
 
+                    # Dynamic Chokepoint Defense Directive (Graph Interdiction Optimization)
+                    try:
+                        if len(report_state.findings) >= 2:
+                            attack_g = BayesianAttackGraph.build_from_report_state(report_state)
+                            chokepoint_rep = chokepoint_analyzer.analyze(attack_g)
+                            if chokepoint_rep.chokepoints:
+                                cp_block = chokepoint_rep.format_block()
+                                if not any("DEFENSE CHOKEPOINT MATRIX" in str(m.get("content", "")) for m in messages[-2:]):
+                                    messages.append({"role": "user", "content": cp_block})
+                    except Exception as e:
+                        logger.debug("Chokepoint analysis error: %s", e)
+
                     try:
                         call_kwargs = {
                             "model": model,
@@ -3059,6 +3080,7 @@ async def run_agent(prompt: str, server_script: str | None = None,
                             )
                             arguments = defense_evasion.adapt_tool_arguments(tool_name, arguments)
                             arguments = exploit_chaining.enrich_tool_arguments(tool_name, arguments)
+                            arguments = session_guardian.inject_session_arguments(tool_name, arguments)
     
                             # ANTI-LOOP ENFORCEMENT: block duplicate tool+args calls
                             call_sig = f"{tool_name}::{json.dumps(arguments, sort_keys=True)}"
@@ -3197,6 +3219,37 @@ async def run_agent(prompt: str, server_script: str | None = None,
                                                 )
                             except Exception as e:
                                 logger.debug("API logic fuzzer error: %s", e)
+
+                            # Dynamic Session Guardian: Check for Session Invalidation & Auto-Recover
+                            try:
+                                if session_guardian.detect_session_death(200 if tool_status == "SUCCESS" else 401, result_str):
+                                    recovered, rec_msg = session_guardian.recover_session(
+                                        exploit_chaining.active_bearer_tokens,
+                                        exploit_chaining.harvested_credentials,
+                                    )
+                                    console.print(f"[bold yellow]🔄 Session Guardian:[/bold yellow] {rec_msg}")
+                                    cognitive_scratchpad.add_verified_fact("Session", rec_msg, confidence=0.99, source_tool="SessionGuardian")
+                            except Exception as e:
+                                logger.debug("Session guardian error: %s", e)
+
+                            # Dynamic SPA & Client-Side Bundle Crawler
+                            try:
+                                if any(kw in result_str for kw in ("webpack", "createBrowserRouter", "<Route", "path:", "localStorage")) or tool_name in ("docker_crawl_web", "browse_webpage", "docker_whatweb"):
+                                    spa_res = spa_crawler.crawl_bundle(result_str, base_url=target_raw_str)
+                                    if spa_res.discovered_routes:
+                                        console.print(f"[bold cyan]🌐 SPA State Crawler:[/bold cyan] Tìm thấy {len(spa_res.discovered_routes)} routes ẩn phía client")
+                                        for r in spa_res.discovered_routes[:3]:
+                                            tot_engine.add_vector(
+                                                node_id=f"spa_route_{abs(hash(r.path)) % 10000}",
+                                                title=f"SPA Route: {r.path}",
+                                                description=f"Client-side route discovered from frontend bundle (Admin: {r.is_admin_route})",
+                                                tool_name="docker_httpx" if "docker_httpx" in tool_names else "docker_crawl_web",
+                                                tool_arguments={"target": r.path},
+                                                hypothesis="Client-side unlinked route may lack backend authorization checks",
+                                                confidence=0.92 if r.is_admin_route else 0.80,
+                                            )
+                            except Exception as e:
+                                logger.debug("SPA state crawler error: %s", e)
 
                             cognitive_scratchpad.update_from_tool_result(tool_name, arguments, result_str)
                             if report_state and report_state.attack_surface:
